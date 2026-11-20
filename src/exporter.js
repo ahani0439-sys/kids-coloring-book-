@@ -2,6 +2,7 @@
 const fs = require('fs');
 const path = require('path');
 const store = require('./store');
+const storage = require('./storage');
 const { buildInterior } = require('./interior');
 const { buildCover } = require('./cover');
 const { validateInterior, validateCover } = require('./validate');
@@ -24,8 +25,8 @@ function preflightFinal(state) {
 
 function write(name, bytes, rep, meta) {
   const file = path.join(store.DIRS.exports, name);
-  fs.writeFileSync(file, bytes);
-  fs.writeFileSync(file + '.json', JSON.stringify({ ...rep, ...meta }, null, 2));
+  storage.writeFile(file + '.json', JSON.stringify({ ...rep, ...meta }, null, 2));
+  storage.writeFile(file, Buffer.from(bytes));
   return { name, bytes: bytes.length };
 }
 

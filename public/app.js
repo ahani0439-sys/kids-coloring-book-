@@ -28,6 +28,7 @@ function setState(next) { S = next.state || next; render(); schedulePoll(); }
 function schedulePoll() {
   clearTimeout(pollTimer);
   if (S.illustrations.some((i) => i.status === 'generating')) pollTimer = setTimeout(load, 4000);
+  else if (S.storage.pending) pollTimer = setTimeout(load, 2500);
 }
 
 // ---------- Rendering ----------
@@ -41,9 +42,30 @@ function render() {
 function renderBanner() {
   const c = S.config, out = [];
   if (tab !== 'overview') { $('#banner').innerHTML = ''; return; }
-  if (!c.image.configured) out.push(`<div class="banner warn"><strong>Image generation is not set up yet</strong><span>Add <code>IMAGE_PROVIDER</code> and its API key as server environment variables (see README). You can upload your own line art on the Pages tab right now.</span></div>`);
-  if (!c.passwordSet) out.push(`<div class="banner ${c.production ? 'bad' : 'warn'}"><strong>No app password</strong><span>Set <code>APP_PASSWORD</code> on the server so only you can open this app${c.production ? '. Generation stays switched off until you do.' : '.'}</span></div>`);
+  if (!c.image.configured) out.push(`<div class="banner warn"><strong>Image generation is not set up yet</strong><span>Add <code>IMAGE_PROVIDER</code> and its API key in Render's Environment settings (see README). You can upload your own line art on the Pages tab right now.</span></div>`);
+  if (!c.passwordSet) out.push(`<div class="banner warn"><strong>No app password</strong><span>Set <code>APP_PASSWORD</code> on the server. In production the app will not start without it.</span></div>`);
+  const other = c.problems.filter((p) => !/APP_PASSWORD/.test(p) && !(c.image.provider === 'none'));
+  if (other.length) out.push(`<div class="banner bad"><strong>Server settings need attention</strong>${other.map((p) => `<span>${esc(p)}</span>`).join('')}</div>`);
   $('#banner').innerHTML = out.join('');
+}
+
+function storageCard() {
+  const st = S.storage, c = S.config;
+  const remote = st.remote;
+  const where = remote ? (st.backend === 's3' ? 'Cloud bucket (S3 / Cloudflare R2)' : 'Mirror folder (test mode)') : 'Server disk (DATA_DIR)';
+  const synced = remote ? (st.pending ? `${st.pending} change(s) uploading…` : st.lastSyncAt ? `All changes saved · ${new Date(st.lastSyncAt).toLocaleTimeString()}` : 'Up to date') : 'Saved on the server disk';
+  const pill = st.lastError ? '<span class="pill st-fail">Sync problem</span>' : st.pending ? '<span class="pill st-generating">Saving</span>' : '<span class="pill st-pass">Saved</span>';
+  const risk = !remote && c.production ? `<p class="small err">Make sure this service has a persistent disk mounted at DATA_DIR. Without one, Render wipes uploads, approvals and PDFs on every restart or redeploy. The free plan has no disk, so use the bucket option in the README.</p>` : '';
+  return `<section class="card">
+    <div class="section-head"><h2>Storage</h2>${pill}</div>
+    <table class="spec-table">
+      <tr><td>Where your work is kept</td><td>${where}</td></tr>
+      <tr><td>Status</td><td>${esc(synced)}</td></tr>
+      <tr><td>Image generations today</td><td>${S.usage.today} of ${S.usage.maxPerDay}</td></tr>
+    </table>
+    ${st.lastError ? `<p class="small err">${esc(st.lastError)}. The app keeps retrying every minute.</p>` : ''}
+    ${risk}
+  </section>`;
 }
 
 function counts() {
@@ -74,7 +96,7 @@ function viewOverview() {
     <button class="btn primary block" data-go="pages">${c.approved === n ? 'Review pages' : `Review pages (${n - c.approved} to go)`}</button>
     ${S.autoExport ? `<p class="small">Auto-assembly ran ${new Date(S.autoExport.at).toLocaleString()}: interior ${S.autoExport.interior.ok ? 'passed' : 'blocked'}, cover ${S.autoExport.cover.ok ? 'passed' : 'blocked'}. See Export.</p>` : ''}
   </section>
-
+  ${storageCard()}
   <section class="card">
     <div class="section-head"><h2>Interior layout</h2><span class="pill ${I.issues.length ? 'st-fail' : 'st-pass'}">${I.issues.length ? 'Needs fixing' : 'Meets KDP rules'}</span></div>
     <p class="small muted">Each picture sits on a right-hand page with a blank page behind it. Scroll the strip to see all ${I.pageCount} pages.</p>
@@ -132,6 +154,8 @@ function viewPages() {
   return `
   <div class="section-head"><h1>Coloring pages</h1><span class="muted small">${c.approved} of ${S.illustrations.length} approved</span></div>
   <div class="chips" role="group" aria-label="Filter">${filters.map(([k, l]) => `<button class="chip" data-filter="${k}" aria-pressed="${filter === k}">${l}</button>`).join('')}</div>
+  ${gen ? `<div class="btn-row"><button class="btn primary" data-genmissing="1" ${c.empty + c.rejected + c.failed ? '' : 'disabled'}>Generate all missing (${c.empty + c.rejected + c.failed})</button></div>
+  <p class="small muted num">${esc(S.config.image.label)} · ${esc(S.config.image.model)} · ${S.usage.today} of ${S.usage.maxPerDay} generations used today</p>` : `<p class="small muted">Generation is off until the server has an image provider. Upload works now.</p>`}
   <p class="small muted">Rejected images are moved out of the book folder and can never be placed in a PDF. Uploads and generated images are converted to pure black-and-white line art at 2250 × 3000 px.</p>
   <div class="gallery">${list.map((il) => card(il, gen)).join('') || '<p class="muted">Nothing here.</p>'}</div>`;
 }
@@ -269,10 +293,17 @@ document.addEventListener('click', async (e) => {
     if (t.dataset.filter) { filter = t.dataset.filter; render(); return; }
     if (t.dataset.act) {
       t.disabled = true;
-      setState(await api(`/api/illustrations/${t.dataset.id}/${t.dataset.act}`, { method: 'POST' }));
+      const res = await api(`/api/illustrations/${t.dataset.id}/${t.dataset.act}`, { method: 'POST' });
+      setState(res);
+      if (res.note) { toast(`Rejected. ${res.note}`); return; }
       toast({ approve: 'Approved', reject: 'Rejected and removed from the book', regenerate: S.config.image.configured ? 'Regenerating' : 'Rejected. Upload or generate a new image.' }[t.dataset.act]);
       if (t.dataset.act === 'approve' && S.autoExport && S.illustrations.every((i) => i.status === 'approved')) toast('All approved. Final files assembled; see Export.');
       return;
+    }
+    if (t.dataset.genmissing) {
+      t.disabled = true;
+      const out = await api('/api/generate-missing', { method: 'POST' });
+      setState(out); toast(out.note ? `Queued ${out.queued}. ${out.note}` : `Queued ${out.queued} page(s)`); return;
     }
     if (t.dataset.gen) { t.disabled = true; setState(await api(`/api/illustrations/${t.dataset.gen}/generate`, { method: 'POST' })); toast('Generation started'); return; }
     if (t.dataset.saveprompt) { setState(await api(`/api/illustrations/${t.dataset.saveprompt}/prompt`, { method: 'PUT', body: { prompt: $('#prompt-' + t.dataset.saveprompt).value } })); toast('Prompt saved'); return; }

@@ -1,33 +1,35 @@
-// Image generation (server-side keys only) and print preparation.
-const fs = require('fs');
+// Image generation (keys stay on the server) and print preparation.
 const path = require('path');
 const crypto = require('crypto');
 const sharp = require('sharp');
+// Small instances (512 MB): no libvips cache, one thread per operation.
+sharp.cache(false);
+sharp.concurrency(1);
 const store = require('./store');
+const storage = require('./storage');
+const { config } = require('./config');
 
 const TARGET = { w: 2250, h: 3000 }; // 7.5" x 10" at 300 DPI, 3:4 portrait
 
 function providerStatus() {
-  const p = (process.env.IMAGE_PROVIDER || '').toLowerCase();
-  if (p === 'replicate') return { provider: 'replicate', configured: !!process.env.REPLICATE_API_TOKEN, model: process.env.REPLICATE_MODEL || 'black-forest-labs/flux-schnell' };
-  if (p === 'openai') return { provider: 'openai', configured: !!process.env.OPENAI_API_KEY, model: process.env.OPENAI_IMAGE_MODEL || 'gpt-image-1' };
-  return { provider: p || 'none', configured: false, model: null };
+  const i = config.image;
+  return { provider: i.provider, label: i.label, model: i.model, configured: !!(i.label && i.apiKey) };
 }
 
 async function generateWithReplicate(prompt) {
-  const model = process.env.REPLICATE_MODEL || 'black-forest-labs/flux-schnell';
-  const res = await fetch(`https://api.replicate.com/v1/models/${model}/predictions`, {
+  const { apiKey, model, replicateBase } = config.image;
+  const res = await fetch(`${replicateBase}/v1/models/${model}/predictions`, {
     method: 'POST',
-    headers: { Authorization: `Bearer ${process.env.REPLICATE_API_TOKEN}`, 'Content-Type': 'application/json', Prefer: 'wait=60' },
-    body: JSON.stringify({ input: { prompt, aspect_ratio: '3:4', output_format: 'png', num_outputs: 1, go_fast: false } }),
+    headers: { Authorization: `Bearer ${apiKey}`, 'Content-Type': 'application/json', Prefer: 'wait=60' },
+    body: JSON.stringify({ input: { prompt, aspect_ratio: '3:4', output_format: 'png', num_outputs: 1 } }),
   });
-  let pred = await res.json();
-  if (!res.ok) throw new Error(`Replicate ${res.status}: ${pred.detail || JSON.stringify(pred).slice(0, 200)}`);
+  let pred = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(`Replicate ${res.status}: ${pred.detail || pred.title || 'request failed'}`);
   const started = Date.now();
   while (!['succeeded', 'failed', 'canceled'].includes(pred.status)) {
     if (Date.now() - started > 180000) throw new Error('Replicate timed out after 3 minutes');
     await new Promise((r) => setTimeout(r, 2000));
-    pred = await (await fetch(pred.urls.get, { headers: { Authorization: `Bearer ${process.env.REPLICATE_API_TOKEN}` } })).json();
+    pred = await (await fetch(pred.urls.get, { headers: { Authorization: `Bearer ${apiKey}` } })).json();
   }
   if (pred.status !== 'succeeded') throw new Error(`Replicate prediction ${pred.status}: ${pred.error || ''}`);
   const url = Array.isArray(pred.output) ? pred.output[0] : pred.output;
@@ -37,21 +39,23 @@ async function generateWithReplicate(prompt) {
 }
 
 async function generateWithOpenAI(prompt) {
-  const res = await fetch('https://api.openai.com/v1/images/generations', {
+  const { apiKey, model, openaiQuality, openaiBase } = config.image;
+  const res = await fetch(`${openaiBase}/v1/images/generations`, {
     method: 'POST',
-    headers: { Authorization: `Bearer ${process.env.OPENAI_API_KEY}`, 'Content-Type': 'application/json' },
-    body: JSON.stringify({ model: process.env.OPENAI_IMAGE_MODEL || 'gpt-image-1', prompt, size: '1024x1536', quality: process.env.OPENAI_IMAGE_QUALITY || 'medium', n: 1 }),
+    headers: { Authorization: `Bearer ${apiKey}`, 'Content-Type': 'application/json' },
+    body: JSON.stringify({ model, prompt, size: '1024x1536', quality: openaiQuality, n: 1 }),
   });
-  const json = await res.json();
+  const json = await res.json().catch(() => ({}));
   if (!res.ok) throw new Error(`OpenAI ${res.status}: ${json.error?.message || 'request failed'}`);
-  const b64 = json.data?.[0]?.b64_json;
-  if (!b64) throw new Error('OpenAI returned no image data');
-  return Buffer.from(b64, 'base64');
+  const item = json.data?.[0];
+  if (item?.b64_json) return Buffer.from(item.b64_json, 'base64');
+  if (item?.url) return Buffer.from(await (await fetch(item.url)).arrayBuffer());
+  throw new Error('OpenAI returned no image data');
 }
 
 async function generateRaw(prompt) {
   const st = providerStatus();
-  if (!st.configured) throw new Error('No image provider configured. Set IMAGE_PROVIDER and its API key on the server.');
+  if (!st.configured) throw new Error('No image provider configured on the server.');
   return st.provider === 'replicate' ? generateWithReplicate(prompt) : generateWithOpenAI(prompt);
 }
 
@@ -74,7 +78,7 @@ async function prepareLineArt(input) {
 
 function saveCandidate(il, prepared, origin) {
   const file = `il-${String(il.id).padStart(2, '0')}-${Date.now()}-${crypto.randomBytes(3).toString('hex')}.png`;
-  fs.writeFileSync(store.imagePath(file), prepared.buffer);
+  storage.writeFile(store.imagePath(file), prepared.buffer);
   if (il.image) archive(il, 'replaced');
   il.image = { file, origin, sourcePx: prepared.sourcePx, px: prepared.px, createdAt: new Date().toISOString() };
   il.status = 'review';
@@ -83,10 +87,10 @@ function saveCandidate(il, prepared, origin) {
 }
 
 // Moves the current image out of the book folder so it can never be placed again.
+// Rejected files are kept (in rejected/) rather than deleted.
 function archive(il, reason) {
   if (!il.image) return;
-  const src = store.imagePath(il.image.file);
-  if (fs.existsSync(src)) fs.renameSync(src, path.join(store.DIRS.rejected, path.basename(il.image.file)));
+  storage.moveFile(store.imagePath(il.image.file), path.join(store.DIRS.rejected, path.basename(il.image.file)));
   il.history.push({ ...il.image, reason, at: new Date().toISOString() });
   il.image = null;
 }
@@ -98,4 +102,58 @@ async function prepareCoverArt(input) {
     .jpeg({ quality: 92 }).withMetadata({ density: 300 }).toBuffer();
 }
 
-module.exports = { TARGET, providerStatus, generateRaw, prepareLineArt, saveCandidate, archive, prepareCoverArt };
+// ---------- Generation queue with a daily spending cap ----------
+const waiting = [];
+let active = 0;
+
+function usageToday(state) {
+  const day = new Date().toISOString().slice(0, 10);
+  if (state.usage.day !== day) state.usage = { ...state.usage, day, generations: 0 };
+  return state.usage;
+}
+
+// Returns an error string, or null when the page was queued.
+function queueGeneration(il) {
+  const state = store.load();
+  const st = providerStatus();
+  if (!st.configured) return 'Image generation is not configured on the server yet. Set IMAGE_PROVIDER and its API key, or upload an image instead.';
+  if (il.status === 'generating') return 'Already generating.';
+  if (il.status === 'approved') return 'Approved images are locked. Reject it first to replace it.';
+  const u = usageToday(state);
+  const queued = state.illustrations.filter((i) => i.status === 'generating').length;
+  if (u.generations + queued >= config.image.maxPerDay) return `Daily limit of ${config.image.maxPerDay} generations reached (MAX_GENERATIONS_PER_DAY). Try again tomorrow or raise the limit.`;
+  il.status = 'generating';
+  il.error = null;
+  store.save();
+  waiting.push(il.id);
+  pump();
+  return null;
+}
+
+function pump() {
+  while (active < config.image.concurrency && waiting.length) {
+    const id = waiting.shift();
+    active++;
+    run(id).finally(() => { active--; pump(); });
+  }
+}
+
+async function run(id) {
+  const state = store.load();
+  const il = store.getIllustration(id);
+  if (!il || il.status !== 'generating') return;
+  try {
+    const raw = await generateRaw(il.prompt);
+    const u = usageToday(state);
+    u.generations++; u.total = (u.total || 0) + 1;
+    const prepared = await prepareLineArt(raw);
+    saveCandidate(il, prepared, `${config.image.provider}:${config.image.model}`);
+    store.logDecision(il, 'generated');
+  } catch (e) {
+    il.status = il.image ? 'review' : 'failed';
+    il.error = e.message;
+  }
+  store.save();
+}
+
+module.exports = { TARGET, providerStatus, generateRaw, prepareLineArt, saveCandidate, archive, prepareCoverArt, queueGeneration, usageToday };

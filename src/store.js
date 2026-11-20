@@ -1,9 +1,11 @@
-// File-based project store. DATA_DIR should point at a persistent disk in production.
+// Project store: state.json plus image and PDF files under DATA_DIR.
+// Every write goes through storage.js so it is persisted (disk or bucket).
 const fs = require('fs');
 const path = require('path');
 const { ILLUSTRATIONS, DEFAULT_BOOK } = require('./content');
+const storage = require('./storage');
 
-const DATA_DIR = path.resolve(process.env.DATA_DIR || path.join(__dirname, '..', 'data'));
+const DATA_DIR = storage.ROOT;
 const DIRS = {
   root: DATA_DIR,
   images: path.join(DATA_DIR, 'images'),
@@ -11,7 +13,7 @@ const DIRS = {
   exports: path.join(DATA_DIR, 'exports'),
   cover: path.join(DATA_DIR, 'cover'),
 };
-for (const d of Object.values(DIRS)) fs.mkdirSync(d, { recursive: true });
+storage.ensureDirs();
 const STATE_FILE = path.join(DATA_DIR, 'state.json');
 
 // Illustration status:
@@ -30,26 +32,47 @@ function freshState() {
       image: null, history: [], regenerateRequested: false, error: null,
     })),
     coverArt: null,
+    usage: { day: null, generations: 0, total: 0 },
+    decisions: [],
   };
 }
 
 let state;
 function load() {
   if (state) return state;
+  let fresh = false;
   try {
     state = JSON.parse(fs.readFileSync(STATE_FILE, 'utf8'));
   } catch {
     state = freshState();
-    save();
+    fresh = true;
   }
-  // Keep defaults for any fields added later.
+  // Keep defaults for any fields added later; never drop existing data.
   state.book = { ...DEFAULT_BOOK, ...state.book, margins: { ...DEFAULT_BOOK.margins, ...(state.book.margins || {}) }, cover: { ...DEFAULT_BOOK.cover, ...(state.book.cover || {}) } };
+  state.usage ||= { day: null, generations: 0, total: 0 };
+  state.decisions ||= [];
+  // A restart interrupts any running generation; put those pages back in a usable state.
+  for (const il of state.illustrations) {
+    if (il.status === 'generating') {
+      il.status = il.image ? 'review' : 'failed';
+      il.error = 'Generation was interrupted by a server restart. Tap Generate to try again.';
+    }
+    // An approved page whose file is missing must not count as approved.
+    if (il.status === 'approved' && (!il.image || !fs.existsSync(imagePath(il.image.file)))) {
+      il.status = 'failed';
+      il.error = 'The approved image file is missing from storage. Upload or generate it again.';
+    }
+  }
+  if (fresh) save();
   return state;
 }
 function save() {
-  const tmp = STATE_FILE + '.tmp';
-  fs.writeFileSync(tmp, JSON.stringify(state, null, 2));
-  fs.renameSync(tmp, STATE_FILE);
+  storage.writeFile(STATE_FILE, JSON.stringify(state, null, 2));
+}
+// Keeps a permanent log of review decisions (who/when is "you", via the app password).
+function logDecision(il, action, extra = {}) {
+  load().decisions.push({ at: new Date().toISOString(), illustration: il.id, action, file: il.image?.file || null, ...extra });
+  if (state.decisions.length > 2000) state.decisions = state.decisions.slice(-2000);
 }
 function getIllustration(id) {
   return load().illustrations.find((i) => i.id === Number(id));
@@ -74,5 +97,7 @@ function listExports() {
     })
     .sort((a, b) => b.created.localeCompare(a.created));
 }
+// Test helper: forget the in-memory state so the next load() reads from disk.
+function _reset() { state = undefined; }
 
-module.exports = { DIRS, load, save, getIllustration, imagePath, approvedImageFile, listExports, freshState };
+module.exports = { DIRS, load, save, logDecision, getIllustration, imagePath, approvedImageFile, listExports, freshState, _reset };

@@ -1,9 +1,7 @@
 // Builds the 8.5 x 11 no-bleed interior PDF from the page plan.
-const fs = require('fs');
-const sharp = require('sharp');
 const { PDFDocument, rgb } = require('pdf-lib');
 const { PT, computeInterior } = require('./kdp');
-const { embedFonts, drawTextBlock } = require('./pdfkit');
+const { embedFonts, drawTextBlock, embedLineArt, drawXObject } = require('./pdfkit');
 const store = require('./store');
 
 const BLACK = rgb(0, 0, 0);
@@ -61,13 +59,12 @@ async function buildInterior(state, { mode = 'proof', guides = false } = {}) {
       const il = state.illustrations.find((i) => i.id === p.illustration);
       const file = store.approvedImageFile(il);
       if (file) {
-        const bytes = fs.readFileSync(file);
-        const meta = await sharp(bytes).metadata();
-        const img = meta.format === 'jpeg' ? await doc.embedJpg(bytes) : await doc.embedPng(bytes);
+        const art = await embedLineArt(doc, file);
+        const meta = { width: art.width, height: art.height };
         const scale = Math.min(safe.w / meta.width, safe.h / meta.height); // inches per pixel
         const wIn = meta.width * scale, hIn = meta.height * scale;
         const rect = { x: safe.x + (safe.w - wIn) / 2, y: safe.y + (safe.h - hIn) / 2, w: wIn, h: hIn };
-        page.drawImage(img, { x: rect.x * PT, y: rect.y * PT, width: rect.w * PT, height: rect.h * PT });
+        drawXObject(page, art.ref, rect.x * PT, rect.y * PT, rect.w * PT, rect.h * PT);
         entry.image = { illustration: il.id, file: il.image.file, status: il.status, pxW: meta.width, pxH: meta.height, dpi: Math.floor(meta.width / wIn), ...rect, sourcePx: il.image.sourcePx || null };
         entry.boxes.push({ kind: 'image', label: `illustration ${il.id}`, ...rect });
       } else if (mode === 'proof') {

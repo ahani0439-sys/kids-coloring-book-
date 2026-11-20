@@ -1,62 +1,122 @@
 # Dino Book Factory
 
-A mobile-first web app that builds an Amazon KDP paperback coloring book, *Dino Buddies Coloring Book*, from your phone. It produces two files: an 8.5" × 11" black-and-white interior PDF and a full-wrap cover PDF. Both are checked against KDP's rules before they are saved. Nothing is ever uploaded to Amazon automatically.
+A mobile-first web app that builds an Amazon KDP paperback coloring book, *Dino Buddies Coloring Book*, from your phone. It produces two files: an 8.5" × 11" black-and-white interior PDF and a full-wrap cover PDF. Both are checked against KDP's rules before they are saved. Nothing is ever uploaded to Amazon, and nothing is deployed or purchased automatically.
 
 ## Status
 
 | Feature | Status |
 |---|---|
-| KDP interior template: 8.5 × 11, no bleed, mirrored gutter | Done and tested |
-| Page order: title, copyright, "This Book Belongs To", blank, then 30 × (illustration on the right-hand page + blank back) = **64 pages** | Done and tested |
-| Margin and gutter rules by page count (KDP chart) | Done and tested |
-| Full-wrap cover: bleed, back, spine, front, safe zones, 2" × 1.2" barcode area | Done and tested |
-| Spine width from KDP's white-paper formula; spine text only at 80+ pages | Done and tested |
-| PDF validation: page sizes, page count, page order, margins, 300 DPI, embedded fonts, cover size, barcode area kept clear | Done and tested |
-| Review gallery: approve, reject, regenerate, upload, edit prompt | Done and tested with uploads |
-| Rejected images can never reach a PDF (moved out of the book folder, and checked again at export) | Done and tested |
-| Final interior and cover assembled automatically once all 30 are approved | Done and tested |
-| PDFs download from iPhone Safari (sent as attachments) | Done |
-| Book title, subtitle, back-cover description, 7 keywords (editable) | Done |
-| AI image generation through Replicate or OpenAI | **Written, not yet tested with a live key** |
-| Hosting | **Needs your Render account (steps below)** |
+| KDP interior template: 8.5 × 11, no bleed, mirrored gutter, 64 pages | Done and tested |
+| Full-wrap cover: bleed, spine, safe zones, barcode area; spine 0.1441" | Done and tested |
+| PDF validation: sizes, page order, margins, 300 DPI, embedded fonts, cover size | Done and tested |
+| Review gallery: approve, reject, regenerate, upload, edit prompt, "Generate all missing" | Done and tested |
+| Rejected images can never reach a PDF (kept in `rejected/`, never deleted) | Done and tested |
+| Final interior and cover built automatically once all 30 are approved | Done and tested |
+| Server-side configuration: `APP_PASSWORD`, `IMAGE_PROVIDER`, API keys | Done and tested. No keys in the browser or `localStorage` |
+| App refuses to start in production without `APP_PASSWORD`; lockout after 10 wrong passwords | Done and tested |
+| Persistent storage: images, approvals, decision log, cover art and PDFs survive restarts and redeploys | Done and tested (local fake S3 + mirror folder) |
+| Daily generation cap (`MAX_GENERATIONS_PER_DAY`, default 60) | Done and tested |
+| Replicate and OpenAI generation | Tested against mock APIs only. **Not yet run with a real key** |
+| Cloudflare R2 storage | Tested with a local S3 emulator. **Not yet run against real R2** |
+| Deployment on Render | **Not deployed. Waiting for your approval and accounts** |
 
-## KDP numbers for this book
+## Image providers and costs
 
-- Interior: 64 pages, 8.5" × 11", no bleed. KDP accepts 24–828 pages for this trim on white paper.
-- Gutter: 0.625" used. KDP's minimum for 24–150 pages is 0.375".
-- Outside, top and bottom margins: 0.5" used. KDP's minimum without bleed is 0.25".
-- Artwork area: 7.375" × 10". Images are prepared at 2250 × 3000 px, which places at about 305 DPI.
-- Spine: 64 × 0.002252" = **0.1441"**.
-- Full cover: 0.125 + 8.5 + 0.1441 + 8.5 + 0.125 = **17.3941" × 11.25"**.
-- Spine text: none. KDP's cover guide says 79+ pages are needed and Cover Creator says 80, so the app enforces 80.
+You pay the provider directly. The app never charges anything itself.
 
-The spine uses the same per-page formula as KDP's calculator. Still, before you upload, enter 8.5 × 11, white paper, black ink and 64 pages in the [official cover calculator](https://kdp.amazon.com/cover-calculator) and confirm the numbers match.
+| `IMAGE_PROVIDER` | Model (default first) | Price per image | 30 pages + ~2× retries (~90 images) |
+|---|---|---|---|
+| `replicate` | `black-forest-labs/flux-schnell` | about **$0.003** | about **$0.27** |
+| `replicate` | `black-forest-labs/flux-dev` (set `REPLICATE_MODEL`) | about $0.025 | about $2.25 |
+| `openai` | `gpt-image-2` | Billed per token: $15 per 1M image-output tokens. OpenAI's docs don't give a flat per-image price | Check OpenAI's pricing page |
+| `openai` | `gpt-image-1.5` (deprecated) | $0.013 low / $0.05 medium / $0.20 high (1024×1536) | $1.17–$18 |
 
-Sources: [Set Trim Size, Bleed, and Margins](https://kdp.amazon.com/en_US/help/topic/GVBQ3CMEQW3W2VL6) · [Create a Paperback Cover](https://kdp.amazon.com/en_US/help/topic/G201953020) · [Cover Creator](https://kdp.amazon.com/en_US/help/topic/G201113520)
+- **Recommendation:** start with Replicate FLUX schnell. It is the cheapest option, and every image is forced to pure black and white anyway. Switch to `flux-dev` if lines look rough.
+- **gpt-image-1:** OpenAI shut it down on October 23, 2026, so it is not offered.
+- **Billing:** both Replicate and OpenAI require you to add billing or prepaid credit before the API works.
+- **Spending guard:** `MAX_GENERATIONS_PER_DAY` limits how many images can be generated per day, even if someone taps "Generate all missing" repeatedly.
 
-## Deploy from an iPhone (Render)
+Prices come from provider pages checked in November 2026 and change often. Confirm them on [replicate.com/pricing](https://replicate.com/pricing) and [OpenAI pricing](https://developers.openai.com/api/docs/pricing) before you add credit.
 
-1. Sign in at render.com with GitHub, then tap **New → Blueprint** and choose this repository. `render.yaml` sets everything up, including a 1 GB persistent disk. The disk needs the Starter plan, about $7/month plus $0.25/GB.
-2. When asked for environment variables, fill in:
-   - `APP_PASSWORD`: a long password. Safari asks for it when you open the app; the username can be anything.
-   - `REPLICATE_API_TOKEN`: from replicate.com → Account → API tokens. FLUX schnell costs a fraction of a cent per image. To use OpenAI instead, set `IMAGE_PROVIDER=openai` and `OPENAI_API_KEY`.
-3. Open the `*.onrender.com` link in Safari. Optional: Share → Add to Home Screen.
+## Hosting and storage costs
 
-API keys live only in the server's environment variables. The browser never sees them.
+| Option | What it costs | Notes |
+|---|---|---|
+| **Render Free + Cloudflare R2 (default in `render.yaml`)** | **$0** within free limits | The service sleeps after 15 minutes idle; the first visit then takes about a minute. R2's free tier covers 10 GB of storage and 1M write operations a month, with no download fees. Cloudflare asks for a payment method to turn R2 on. |
+| Render Starter + persistent disk | $7/month + $0.25/GB/month | Always on, no bucket needed. **Only switch if you approve the cost.** |
+
+This book needs well under 1 GB: about 30–90 line-art PNGs plus a few PDFs.
+
+## How storage persistence works
+
+The app works on files in `DATA_DIR`. With `STORAGE_BACKEND=s3`:
+
+- **Writes:** every change is copied to your bucket right away: `state.json` (approvals, prompts, book details, decision log), `images/`, `rejected/`, `cover/` and `exports/`.
+- **Startup:** the bucket is downloaded before the app accepts requests, so a fresh container after a redeploy gets everything back.
+- **Shutdown:** when Render stops the app, it first finishes any pending uploads.
+- **Approved files:** if an approved file were ever missing, that page is shown as "failed" instead of silently counting as approved.
+
+With `STORAGE_BACKEND=local`, `DATA_DIR` must sit on a persistent disk (the paid option above).
+
+## Deploy from your iPhone (step by step)
+
+Do these in Safari. Nothing costs money until you add billing yourself in steps 3 and 4.
+
+**1. Push the code to GitHub.** The last push from Claude failed because the Claude GitHub App has no access to this repository. Open https://claude.ai/connect-github, reconnect GitHub, and install the Claude GitHub App on `kids-coloring-book-`. Then ask Claude to push the branch `claude/storyforge-mobile-app-62wmq5`.
+
+**2. Create the storage bucket (Cloudflare R2, free tier).**
+1. Sign up at dash.cloudflare.com, open **R2 Object Storage**, and turn it on. Cloudflare asks for a payment method, but the free tier is $0.
+2. Tap **Create bucket** and name it `dino-book-factory`. Leave the location on Automatic.
+3. Go to **R2 → Manage API tokens → Create API token**. Choose permission **Object Read & Write**, limited to that bucket.
+4. Copy the **Access Key ID**, the **Secret Access Key**, and the S3 endpoint `https://<ACCOUNT_ID>.r2.cloudflarestorage.com`. Store them in your password manager. The secret is shown only once.
+
+**3. Get an image API key (optional now; uploads work without it).**
+- Replicate: replicate.com → sign in with GitHub → Account → **API tokens** → create one. Add billing under **Billing** when you are ready to generate.
+- Or OpenAI: platform.openai.com → **API keys**. Add prepaid credit under Billing.
+
+**4. Create the service on Render.**
+1. Sign up at render.com with GitHub.
+2. Tap **New → Blueprint** and pick `kids-coloring-book-`. Render reads `render.yaml` and shows one **Free** web service.
+3. Fill in the secret fields it asks for:
+   - `APP_PASSWORD`: a long password (at least 16 characters).
+   - `REPLICATE_API_TOKEN` (or leave it empty for now)
+   - `S3_ENDPOINT`, `S3_ACCESS_KEY_ID`, `S3_SECRET_ACCESS_KEY` (from step 2)
+4. Check that the plan says **Free**, then tap **Apply**. The first build takes about 3–5 minutes.
+
+**5. Open the app.**
+1. Open the `https://dino-book-factory-xxxx.onrender.com` link. Safari asks for a username and password: type anything as the username and your `APP_PASSWORD`.
+2. On **Overview**, the Storage card should say *Cloud bucket* and *All changes saved*.
+3. Optional: Share → **Add to Home Screen**.
+
+**6. Changing settings later.** Render → your service → **Environment**. Edit a value, then **Save, rebuild, and deploy**. Keys are stored only there, never in the app or the browser.
 
 ## Workflow
 
-1. **Book tab:** enter your author name, which the final files require, and adjust the title, description and keywords.
-2. **Pages tab:** tap Generate, or upload your own line art. Every image is converted to pure black and white at 2250 × 3000 px. Then approve, reject or regenerate each one.
-3. **Export tab:** build proofs at any time. Placeholders fill pages that are not approved yet, and proofs are not for upload. The print-ready interior unlocks once all 30 are approved, and is built automatically at that moment.
-4. Download, check the PDFs, then upload them to KDP yourself. KDP asks whether the book contains AI-generated content, so answer that honestly.
+1. **Book tab:** enter your author name (required for the final files) and adjust the title, description and keywords.
+2. **Pages tab:** tap **Generate all missing**, or generate or upload one page at a time. Approve, reject or regenerate each image.
+3. **Export tab:** proofs can be built at any time. The print-ready interior unlocks when all 30 are approved and is also built automatically at that moment.
+4. Download the PDFs, check them, and upload them to KDP yourself. Before uploading, confirm the cover size (17.394" × 11.25" for 64 pages on white paper) in the [KDP cover calculator](https://kdp.amazon.com/cover-calculator). Answer KDP's AI-content question honestly.
+
+## KDP numbers for this book
+
+- **Interior:** 64 pages, 8.5" × 11", no bleed.
+- **Gutter:** 0.625". KDP's minimum for 24–150 pages is 0.375".
+- **Other margins:** 0.5". KDP's minimum is 0.25".
+- **Art box:** 7.375" × 10". Images are prepared at 2250 × 3000 px (about 305 DPI), stored as native 1-bit black and white in the PDF.
+- **Spine:** 64 × 0.002252" = 0.1441". The full cover is 17.3941" × 11.25". No spine text, because KDP needs 79–80+ pages for it.
+
+Sources: [Set Trim Size, Bleed, and Margins](https://kdp.amazon.com/en_US/help/topic/GVBQ3CMEQW3W2VL6) · [Create a Paperback Cover](https://kdp.amazon.com/en_US/help/topic/G201953020) · [Cover Creator](https://kdp.amazon.com/en_US/help/topic/G201113520)
+
+## Configuration reference
+
+See `.env.example`. Secrets are read only on the server (`src/config.js`). The browser receives just "configured: yes/no" and the variable names.
 
 ## Run locally / test
 
 ```
 npm install
-npm test        # builds proof + final PDFs in a temp folder and validates them
-npm start       # http://localhost:3000
+npm test     # PDF pipeline, persistence after a wiped container, auth/secrets, generation with mock providers
+npm start    # http://localhost:3000
 ```
 
-Stack: Node 20+, Express, pdf-lib (MIT), sharp (Apache-2.0), Fredoka and Nunito fonts (OFL, embedded in every PDF).
+Stack: Node 22, Express, pdf-lib (MIT), sharp (Apache-2.0), AWS SDK v3 for S3/R2 (Apache-2.0), Fredoka and Nunito fonts (OFL, embedded in every PDF).

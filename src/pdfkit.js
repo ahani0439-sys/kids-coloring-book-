@@ -72,3 +72,33 @@ function textBlockHeight(text, font, size, widthPt, lineGap = 1.25) {
 }
 
 module.exports = { embedFonts, hexToRgb, wrap, drawTextBlock, textBlockHeight };
+
+// Embeds black-and-white line art as a native 1-bit DeviceGray image (Flate compressed).
+// Much lighter than pdf-lib's PNG embedding, which decodes to full RGB in memory.
+async function embedLineArt(doc, file) {
+  const sharp = require('sharp');
+  const { data, info } = await sharp(file).flatten({ background: '#ffffff' }).grayscale().raw().toBuffer({ resolveWithObject: true });
+  const { width, height, channels } = info;
+  const rowBytes = Math.ceil(width / 8);
+  const bits = Buffer.alloc(rowBytes * height); // 0 = black, 1 = white
+  for (let y = 0; y < height; y++) {
+    for (let x = 0; x < width; x++) {
+      if (data[(y * width + x) * channels] >= 128) bits[y * rowBytes + (x >> 3)] |= 0x80 >> (x & 7);
+    }
+  }
+  const stream = doc.context.flateStream(bits, {
+    Type: 'XObject', Subtype: 'Image', Width: width, Height: height,
+    ColorSpace: 'DeviceGray', BitsPerComponent: 1,
+  });
+  const ref = doc.context.register(stream);
+  return { ref, width, height };
+}
+
+function drawXObject(page, ref, x, y, w, h) {
+  const { pushGraphicsState, popGraphicsState, concatTransformationMatrix, drawObject } = require('pdf-lib');
+  const name = page.node.newXObject('Im', ref);
+  page.pushOperators(pushGraphicsState(), concatTransformationMatrix(w, 0, 0, h, x, y), drawObject(name), popGraphicsState());
+}
+
+module.exports.embedLineArt = embedLineArt;
+module.exports.drawXObject = drawXObject;

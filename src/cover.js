@@ -4,17 +4,21 @@ const path = require('path');
 const sharp = require('sharp');
 const { PDFDocument, rgb, degrees } = require('pdf-lib');
 const { PT, computeCover, computeInterior } = require('./kdp');
-const { embedFonts, drawTextBlock, hexToRgb, textBlockHeight } = require('./pdfkit');
+const { embedFonts, drawTextBlock, hexToRgb, textBlockHeight, embedLineArt, drawXObject } = require('./pdfkit');
 const store = require('./store');
 
 const WHITE = rgb(1, 1, 1);
 const GUIDE = { trim: rgb(0.9, 0.1, 0.1), safe: rgb(0, 0.6, 0.85), spine: rgb(0.6, 0.2, 0.8), barcode: rgb(0.95, 0.55, 0) };
 
+// Color cover art is stored as JPEG (embedded without decoding); line art uses the 1-bit embedder.
 async function embedImage(doc, file) {
-  const bytes = fs.readFileSync(file);
-  const meta = await sharp(bytes).metadata();
-  const img = meta.format === 'jpeg' ? await doc.embedJpg(bytes) : await doc.embedPng(await sharp(bytes).png().toBuffer());
-  return { img, meta };
+  const meta = await sharp(file).metadata();
+  if (meta.format === 'jpeg') {
+    const img = await doc.embedJpg(fs.readFileSync(file));
+    return { meta, draw: (page, o) => page.drawImage(img, o) };
+  }
+  const art = await embedLineArt(doc, file);
+  return { meta: { width: art.width, height: art.height }, draw: (page, o) => drawXObject(page, art.ref, o.x, o.y, o.width, o.height) };
 }
 
 // mode: 'template' (guides + placeholders) or 'print' (no guides, must have art).
@@ -56,7 +60,7 @@ async function buildCover(state, { mode = 'template' } = {}) {
     if (first) { artFile = first; artSource = 'approved illustration'; }
   }
   if (artFile) {
-    const { img, meta } = await embedImage(doc, artFile);
+    const { draw, meta } = await embedImage(doc, artFile);
     const panelPad = 0.12;
     const s = Math.min((art.w - 2 * panelPad) / meta.width, (art.h - 2 * panelPad) / meta.height);
     const w = meta.width * s, h = meta.height * s;
@@ -64,7 +68,7 @@ async function buildCover(state, { mode = 'template' } = {}) {
     if (artSource === 'approved illustration') {
       page.drawRectangle({ x: (r.x - panelPad) * PT, y: (r.y - panelPad) * PT, width: (w + 2 * panelPad) * PT, height: (h + 2 * panelPad) * PT, color: WHITE, borderColor: accent, borderWidth: 3 });
     }
-    page.drawImage(img, { x: r.x * PT, y: r.y * PT, width: w * PT, height: h * PT });
+    draw(page, { x: r.x * PT, y: r.y * PT, width: w * PT, height: h * PT });
     manifest.images.push({ label: 'front art', source: artSource, pxW: meta.width, pxH: meta.height, dpi: Math.floor(meta.width / w), ...r });
     manifest.boxes.push({ kind: 'image', label: 'front art', ...r });
   } else {
@@ -92,11 +96,11 @@ async function buildCover(state, { mode = 'template' } = {}) {
     const th = tw / 0.75;
     let tx = bx0 / PT + (availW - (tw * n + gap * (n - 1))) / 2;
     for (const file of approved) {
-      const { img, meta } = await embedImage(doc, file);
+      const { draw, meta } = await embedImage(doc, file);
       const r = { x: tx, y: thumbTop - th, w: tw, h: th };
       page.drawRectangle({ x: r.x * PT, y: r.y * PT, width: r.w * PT, height: r.h * PT, color: WHITE, borderColor: accent, borderWidth: 1.5 });
       const s = Math.min((tw - 0.1) / meta.width, (th - 0.1) / meta.height);
-      page.drawImage(img, { x: (r.x + (tw - meta.width * s) / 2) * PT, y: (r.y + (th - meta.height * s) / 2) * PT, width: meta.width * s * PT, height: meta.height * s * PT });
+      draw(page, { x: (r.x + (tw - meta.width * s) / 2) * PT, y: (r.y + (th - meta.height * s) / 2) * PT, width: meta.width * s * PT, height: meta.height * s * PT });
       manifest.images.push({ label: 'back thumbnail', pxW: meta.width, pxH: meta.height, dpi: Math.floor(meta.width / (meta.width * s)), ...r });
       manifest.boxes.push({ kind: 'image', label: 'back thumbnail', ...r });
       tx += tw + gap;
