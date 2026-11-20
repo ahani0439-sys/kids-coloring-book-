@@ -21,6 +21,8 @@ function s3Adapter(c) {
   const { S3Client, ListObjectsV2Command, GetObjectCommand, PutObjectCommand, DeleteObjectCommand } = require('@aws-sdk/client-s3');
   const client = new S3Client({
     region: c.region || 'auto', endpoint: c.endpoint, forcePathStyle: true,
+    // Compatibility with Backblaze B2 and Cloudflare R2: only send checksums when the API requires them.
+    requestChecksumCalculation: 'WHEN_REQUIRED', responseChecksumValidation: 'WHEN_REQUIRED',
     credentials: { accessKeyId: c.accessKeyId, secretAccessKey: c.secretAccessKey },
   });
   const key = (rel) => c.prefix + rel;
@@ -162,6 +164,9 @@ async function restore() {
   }
   let n = 0;
   for (const o of objects) {
+    // Never needed by the running app (kept safely in the bucket): rejected images and SVG sources.
+    // Skipping them keeps each cold start well inside free-tier download limits.
+    if (o.rel.startsWith('rejected/') || o.rel.endsWith('.svg')) continue;
     const abs = path.join(ROOT, o.rel);
     if (fs.existsSync(abs) && fs.statSync(abs).size === o.size && o.rel !== 'state.json') continue;
     const buf = await remote.get(o.rel);

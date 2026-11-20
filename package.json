@@ -9,7 +9,7 @@
   },
   "scripts": {
     "start": "node server.js",
-    "test": "node test/smoke.js && node test/storage-race.js && node test/svg-engine.js && node test/persistence.js && node test/generation.js"
+    "test": "node test/smoke.js && node test/storage-race.js && node test/svg-engine.js && node test/auto-assembly.js && node test/persistence.js && node test/generation.js"
   },
   "license": "MIT",
   "dependencies": {

@@ -101,7 +101,7 @@ async function waitSynced() {
   ok((await fetch(url(`/api/illustrations/1/image`), { headers: AUTH })).status === 200, '#1 image file served after restore');
   ok(il(2).status === 'review' && il(2).hasImage, '#2 still waiting for review');
   ok(il(3).status === 'rejected' && !il(3).hasImage && il(3).history.length === 1, '#3 still rejected, file not back in the book folder');
-  ok(fs.existsSync(path.join(DATA, 'rejected', il(3).history[0].file)), 'rejected file kept in rejected/');
+  ok(fs.existsSync(path.join(BUCKET, 'rejected', il(3).history[0].file)) && !fs.existsSync(path.join(DATA, 'rejected', il(3).history[0].file)), 'rejected file kept safely in the bucket, not downloaded on restart');
   ok(il(4).status === 'failed' && /interrupted/.test(il(4).error), 'interrupted generation recovered as failed with a message');
   ok(after.coverArt && (await fetch(url('/api/cover-art'), { headers: AUTH })).status === 200, 'cover art restored');
   ok(after.book.author === 'Persist Author', 'book details restored');

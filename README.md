@@ -73,37 +73,47 @@ The app works on files in `DATA_DIR`. With `STORAGE_BACKEND=s3`:
 
 With `STORAGE_BACKEND=local`, `DATA_DIR` must sit on a persistent disk (the paid option above).
 
-## Deploy from your iPhone (step by step)
+## Deploy from your iPhone (Render Free + Backblaze B2, $0)
 
-Do these in Safari. Nothing costs money until you add billing yourself in steps 3 and 4.
+You do every step in Safari. None of them needs a credit card, and manual uploads need no image API.
 
-**1. Push the code to GitHub.** The last push from Claude failed because the Claude GitHub App has no access to this repository. Open https://claude.ai/connect-github, reconnect GitHub, and install the Claude GitHub App on `kids-coloring-book-`. Then ask Claude to push the branch `claude/storyforge-mobile-app-62wmq5`.
+**1. Free storage bucket (Backblaze B2: 10 GB free, no card at sign-up)**
+1. Sign up at backblaze.com and choose **B2 Cloud Storage**.
+2. Go to **Buckets → Create a Bucket**. Pick a unique name (for example `dino-book-yourname-2026`), set it to **Private** and turn encryption on.
+3. Note the bucket's **Endpoint**, for example `s3.us-east-005.backblazeb2.com`. The region is the part in the middle, `us-east-005`.
+4. Go to **Application Keys → Add a New Application Key**. Allow access to that bucket only, with **Read and Write**. Copy the **keyID** and the **applicationKey** right away; the key is shown only once.
 
-**2. Create the storage bucket (Cloudflare R2, free tier).**
-1. Sign up at dash.cloudflare.com, open **R2 Object Storage**, and turn it on. Cloudflare asks for a payment method, but the free tier is $0.
-2. Tap **Create bucket** and name it `dino-book-factory`. Leave the location on Automatic.
-3. Go to **R2 → Manage API tokens → Create API token**. Choose permission **Object Read & Write**, limited to that bucket.
-4. Copy the **Access Key ID**, the **Secret Access Key**, and the S3 endpoint `https://<ACCOUNT_ID>.r2.cloudflarestorage.com`. Store them in your password manager. The secret is shown only once.
+**2. Render (Free plan)**
+1. Sign up at render.com with GitHub and allow access to the `kids-coloring-book-` repository.
+2. Tap **New → Blueprint**, pick the repository and the branch `claude/storyforge-mobile-app-62wmq5`. Render reads `render.yaml` and shows one **Free** web service.
+3. Fill in the values it asks for:
+   - `APP_PASSWORD`: a long password. Safari asks for it each session; the username can be anything.
+   - `S3_ENDPOINT`: `https://` followed by the endpoint from step 1.3.
+   - `S3_REGION`: for example `us-east-005`.
+   - `S3_BUCKET`: your bucket's exact name.
+   - `S3_ACCESS_KEY_ID` / `S3_SECRET_ACCESS_KEY`: the keyID and applicationKey from step 1.4.
+4. Check that the plan says **Free**. If Render asks for a card, stop: it usually means a service isn't on the free plan.
+5. Tap **Apply**. The first build takes about 3–5 minutes.
 
-**3. Get an image API key (optional now; uploads work without it).**
-- Replicate: replicate.com → sign in with GitHub → Account → **API tokens** → create one. Add billing under **Billing** when you are ready to generate.
-- Or OpenAI: platform.openai.com → **API keys**. Add prepaid credit under Billing.
-
-**4. Create the service on Render.**
-1. Sign up at render.com with GitHub.
-2. Tap **New → Blueprint** and pick `kids-coloring-book-`. Render reads `render.yaml` and shows one **Free** web service.
-3. Fill in the secret fields it asks for:
-   - `APP_PASSWORD`: a long password (at least 16 characters).
-   - `REPLICATE_API_TOKEN` (or leave it empty for now)
-   - `S3_ENDPOINT`, `S3_ACCESS_KEY_ID`, `S3_SECRET_ACCESS_KEY` (from step 2)
-4. Check that the plan says **Free**, then tap **Apply**. The first build takes about 3–5 minutes.
-
-**5. Open the app.**
-1. Open the `https://dino-book-factory-xxxx.onrender.com` link. Safari asks for a username and password: type anything as the username and your `APP_PASSWORD`.
+**3. Use it**
+1. Open `https://dino-book-factory-xxxx.onrender.com` and enter your password.
 2. On **Overview**, the Storage card should say *Cloud bucket* and *All changes saved*.
 3. Optional: Share → **Add to Home Screen**.
 
-**6. Changing settings later.** Render → your service → **Environment**. Edit a value, then **Save, rebuild, and deploy**. Keys are stored only there, never in the app or the browser.
+**If something is missing,** the app refuses to start rather than risk losing your work. Render's **Logs** tab shows the exact reason, such as `Refusing to start: ... needs S3_BUCKET`.
+
+### Free-tier limitations
+
+- **Sleep:** the service sleeps after 15 minutes without visits. The next visit takes about a minute while it wakes and reloads your work from the bucket.
+- **Speed:** Render Free has 0.1 CPU and 512 MB RAM. Measured on a full machine and scaled down, expect about 7 seconds per upload, 1–2 minutes for the final 30-page interior, and about 15 seconds for the cover. The final build runs in the background after your 30th approval.
+- **Monthly hours:** 750 free instance hours a month. If they run out, Render pauses the service until the next month.
+- **Storage:** the server's own disk is erased on every restart; only the bucket keeps your work. B2's free tier covers 10 GB of storage and 2,500 downloads a day. Each wake-up downloads only what the app needs (rejected images and drawing sources stay in the bucket), which is well within the limit for this book.
+- **Updates:** `autoDeploy` is off, so pushing to the branch doesn't redeploy. Use **Manual Deploy** in Render when you want an update.
+- **Cloudflare R2** also works (`S3_REGION=auto`), but Cloudflare may ask for a payment method first.
+
+### Uploading illustrations made in ChatGPT
+
+Tap **Pages → Upload** on a page and pick the image from Photos or Files. ChatGPT portrait images are usually 1024 × 1536 px. The app enlarges them to print size (2250 × 3000) and converts them to pure black and white. Each card warns that the source is low resolution and adds narrow white side bands, because the book page is 3:4 rather than 2:3, so check the preview before approving. Ask ChatGPT for black outlines only, white background, no gray shading. Gray areas become solid black. When you publish, tell KDP the book contains AI-generated images.
 
 ## Workflow
 

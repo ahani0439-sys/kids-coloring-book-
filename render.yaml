@@ -1,10 +1,18 @@
 # Render Blueprint for Dino Book Factory.
 # Applying it creates ONE web service on Render's FREE plan ($0). Nothing paid is enabled.
-# Storage: the free plan has no persistent disk, so uploads, approvals and PDFs are saved to a
-# Cloudflare R2 bucket (free tier: 10 GB) via the S3_* variables below. See README.md.
+# Manual uploads need no image API. The built-in drawing engine (IMAGE_PROVIDER=svg) needs no key.
 #
-# Paid alternative (only if you approve the cost): change `plan: free` to `plan: starter` ($7/month),
-# set STORAGE_BACKEND to "local", and uncomment the disk block ($0.25 per GB per month).
+# Storage: the free plan has no persistent disk (files vanish on every restart), so uploads,
+# approvals and PDFs are saved to an S3-compatible bucket. Recommended free option:
+#   Backblaze B2 (10 GB free, no card at sign-up):
+#     S3_ENDPOINT = https://s3.<region>.backblazeb2.com   e.g. https://s3.us-east-005.backblazeb2.com
+#     S3_REGION   = <region>                               e.g. us-east-005
+#   Cloudflare R2 (10 GB free; Cloudflare may ask for a payment method):
+#     S3_ENDPOINT = https://<ACCOUNT_ID>.r2.cloudflarestorage.com   S3_REGION = auto
+# The app refuses to start in production if these are missing, rather than losing your work.
+#
+# Paid alternative (only with your approval): plan: starter ($7/month) + a disk ($0.25/GB/month),
+# STORAGE_BACKEND=local and LOCAL_DISK_IS_PERSISTENT=true.
 services:
   - type: web
     name: dino-book-factory
@@ -22,8 +30,8 @@ services:
     envVars:
       - key: NODE_ENV
         value: production
-      - key: DATA_DIR
-        value: /var/data
+      - key: DATA_DIR              # working copy only; the bucket is the permanent copy
+        value: /tmp/dino-book-data
       - key: APP_PASSWORD          # required: the app will not start without it
         sync: false
       # Image generation uses the free built-in drawing engine by default (no key needed).
@@ -34,10 +42,12 @@ services:
         value: "60"
       - key: STORAGE_BACKEND
         value: s3
-      - key: S3_ENDPOINT           # https://<ACCOUNT_ID>.r2.cloudflarestorage.com
+      - key: S3_ENDPOINT           # see the comment at the top
         sync: false
-      - key: S3_BUCKET
-        value: dino-book-factory
+      - key: S3_REGION             # B2: e.g. us-east-005 · R2: auto
+        sync: false
+      - key: S3_BUCKET             # your bucket's exact name (B2 names are globally unique)
+        sync: false
       - key: S3_ACCESS_KEY_ID
         sync: false
       - key: S3_SECRET_ACCESS_KEY

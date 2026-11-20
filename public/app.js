@@ -45,7 +45,7 @@ function setState(next) { S = next.state || next; render(); schedulePoll(); }
 function schedulePoll() {
   clearTimeout(pollTimer);
   if (S.illustrations.some((i) => i.status === 'generating')) pollTimer = setTimeout(load, 2000);
-  else if (S.storage.pending) pollTimer = setTimeout(load, 2500);
+  else if (S.storage.pending || S.autoExport?.status === 'running') pollTimer = setTimeout(load, 2500);
 }
 
 // ---------- Rendering ----------
@@ -91,6 +91,14 @@ function counts() {
   return c;
 }
 
+function autoExportLine() {
+  const a = S.autoExport;
+  if (!a) return '';
+  if (a.status === 'running') return '<p class="small"><strong>All 30 approved.</strong> Building the print-ready interior and cover now (about 1–2 minutes)…</p>';
+  if (a.status === 'failed') return `<p class="small err">Automatic assembly stopped: ${esc(a.error)}</p>`;
+  return `<p class="small">Final files built ${new Date(a.at).toLocaleString()}: interior ${a.interior?.ok ? 'passed' : 'blocked'}, cover ${a.cover?.ok ? 'passed' : 'blocked'}. See Export.</p>`;
+}
+
 function viewOverview() {
   const c = counts(), n = S.illustrations.length, I = S.specs.interior, C = S.specs.cover;
   const seg = (k, color) => `<span style="width:${(c[k] / n) * 100}%;background:var(${color})"></span>`;
@@ -111,7 +119,7 @@ function viewOverview() {
       <div class="stat"><b>${C.spine.toFixed(3)}"</b><span>spine width</span></div>
     </div>
     <button class="btn primary block" data-go="pages">${c.approved === n ? 'Review pages' : `Review pages (${n - c.approved} to go)`}</button>
-    ${S.autoExport ? `<p class="small">Auto-assembly ran ${new Date(S.autoExport.at).toLocaleString()}: interior ${S.autoExport.interior.ok ? 'passed' : 'blocked'}, cover ${S.autoExport.cover.ok ? 'passed' : 'blocked'}. See Export.</p>` : ''}
+    ${autoExportLine()}
   </section>
   ${storageCard()}
   <section class="card">

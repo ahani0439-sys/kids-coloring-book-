@@ -16,6 +16,19 @@ if (config.production && !config.password) {
   console.error('Refusing to start: set APP_PASSWORD in the environment (Render > your service > Environment).');
   process.exit(1);
 }
+// Never run in production on storage that silently disappears.
+if (config.production) {
+  const st = config.storage;
+  const missing = st.backend === 's3' ? ['endpoint', 'bucket', 'accessKeyId', 'secretAccessKey'].filter((k) => !st[k]) : [];
+  if (missing.length) {
+    console.error(`Refusing to start: STORAGE_BACKEND=s3 needs ${missing.map((k) => ({ endpoint: 'S3_ENDPOINT', bucket: 'S3_BUCKET', accessKeyId: 'S3_ACCESS_KEY_ID', secretAccessKey: 'S3_SECRET_ACCESS_KEY' }[k])).join(', ')}.`);
+    process.exit(1);
+  }
+  if (st.backend === 'local' && process.env.LOCAL_DISK_IS_PERSISTENT !== 'true') {
+    console.error('Refusing to start: STORAGE_BACKEND=local loses all uploads on Render Free. Use s3 storage, or set LOCAL_DISK_IS_PERSISTENT=true only if a persistent disk is mounted at DATA_DIR.');
+    process.exit(1);
+  }
+}
 
 const app = express();
 app.set('trust proxy', 1); // Render terminates TLS in front of the app
@@ -185,12 +198,21 @@ app.post('/api/illustrations/:id/:action', wrap(async (req, res) => {
   }
   store.save();
 
-  // Once every illustration is approved, assemble the final files automatically.
+  // Once every illustration is approved, assemble the final files automatically, in the background
+  // (it takes 1-2 minutes on a small free server), so the Approve tap answers right away.
   if (action === 'approve' && s.illustrations.every((i) => store.approvedImageFile(i))) {
-    const interior = await exportInterior(s, { mode: 'final' });
-    const cover = await exportCover(s, { mode: 'print' });
-    s.autoExport = { at: new Date().toISOString(), interior: { ok: interior.ok, file: interior.file?.name || null }, cover: { ok: cover.ok, file: cover.file?.name || null } };
+    s.autoExport = { at: new Date().toISOString(), status: 'running' };
     store.save();
+    setImmediate(async () => {
+      try {
+        const interior = await exportInterior(s, { mode: 'final' });
+        const cover = await exportCover(s, { mode: 'print' });
+        s.autoExport = { at: new Date().toISOString(), status: 'done', interior: { ok: interior.ok, file: interior.file?.name || null }, cover: { ok: cover.ok, file: cover.file?.name || null } };
+      } catch (e) {
+        s.autoExport = { at: new Date().toISOString(), status: 'failed', error: e.message };
+      }
+      store.save();
+    });
   }
   res.json({ ...publicState(), note });
 }));

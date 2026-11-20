@@ -51,6 +51,7 @@ function load() {
   state.book = { ...DEFAULT_BOOK, ...state.book, margins: { ...DEFAULT_BOOK.margins, ...(state.book.margins || {}) }, cover: { ...DEFAULT_BOOK.cover, ...(state.book.cover || {}) } };
   state.usage ||= { day: null, generations: 0, total: 0 };
   state.decisions ||= [];
+  if (state.autoExport?.status === 'running') state.autoExport = { at: state.autoExport.at, status: 'failed', error: 'Interrupted by a server restart. Build the final files from the Export tab.' };
   // A restart interrupts any running generation; put those pages back in a usable state.
   for (const il of state.illustrations) {
     if (il.status === 'generating') {
