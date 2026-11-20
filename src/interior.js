@@ -1,6 +1,7 @@
 // Builds the 8.5 x 11 no-bleed interior PDF from the page plan.
 const { PDFDocument, rgb } = require('pdf-lib');
-const { PT, computeInterior } = require('./kdp');
+const { PT, bookSpecs } = require('./kdp');
+const storage = require('./storage');
 const { embedFonts, drawTextBlock, embedLineArt, drawXObject } = require('./pdfkit');
 const store = require('./store');
 
@@ -12,7 +13,10 @@ const PLACEHOLDER = rgb(0.55, 0.55, 0.55);
 // mode: 'proof' (placeholders allowed, optional guides) or 'final' (approved art only).
 async function buildInterior(state, { mode = 'proof', guides = false } = {}) {
   const book = state.book;
-  const spec = computeInterior({ includeIntro: book.includeIntro, margins: book.margins, illustrationCount: state.illustrations.length });
+  const B = store.of(state);
+  const spec = bookSpecs(book, state.illustrations.length).interior;
+  // Approved images may live only in the bucket after a restart: fetch them before building.
+  await storage.ensureAllLocal(state.illustrations.map((il) => B.approvedImageFile(il)).filter(Boolean));
   const doc = await PDFDocument.create();
   doc.setTitle(book.title);
   doc.setAuthor(book.author || '');
@@ -22,7 +26,7 @@ async function buildInterior(state, { mode = 'proof', guides = false } = {}) {
   const f = await embedFonts(doc);
   const { w: W, h: H } = spec.pageSizePt;
   const m = spec.margins;
-  const manifest = { mode, guides, spec: { pageCount: spec.pageCount, margins: m, pageSize: spec.pageSize, artBox: spec.artBox }, pages: [] };
+  const manifest = { mode, guides, spec: { pageCount: spec.pageCount, margins: m, pageSize: spec.pageSize, artBox: spec.artBox, minPages: spec.minPages, maxPages: spec.maxPages, trimKey: spec.trimKey, paper: spec.paper, illustrationCount: spec.illustrationCount, insideRaised: spec.insideRaised }, pages: [] };
 
   for (const p of spec.plan) {
     const page = doc.addPage([W, H]);
@@ -57,7 +61,7 @@ async function buildInterior(state, { mode = 'proof', guides = false } = {}) {
       drawTextBlock(page, tips, { font: f.body, size: 14, x0: x0 + 0.4 * PT, x1: x1 - 0.4 * PT, topY: lineY - 1.0 * PT, color: GREY, boxes: entry.boxes, label: 'tips' });
     } else if (p.role === 'illustration') {
       const il = state.illustrations.find((i) => i.id === p.illustration);
-      const file = store.approvedImageFile(il);
+      const file = B.approvedImageFile(il);
       if (file) {
         const art = await embedLineArt(doc, file);
         const meta = { width: art.width, height: art.height };

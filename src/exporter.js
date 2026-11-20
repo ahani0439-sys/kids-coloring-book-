@@ -16,16 +16,20 @@ function stamp() {
 
 function preflightFinal(state) {
   const problems = [];
-  const notApproved = state.illustrations.filter((il) => !store.approvedImageFile(il));
-  if (notApproved.length) problems.push(`${notApproved.length} illustration(s) not approved: ${notApproved.map((i) => '#' + i.id).join(', ')}`);
+  const B = store.of(state);
+  const notApproved = state.illustrations.filter((il) => !B.approvedImageFile(il));
+  const list = notApproved.length > 12 ? notApproved.slice(0, 12).map((i) => '#' + i.id).join(', ') + ` and ${notApproved.length - 12} more` : notApproved.map((i) => '#' + i.id).join(', ');
+  if (notApproved.length) problems.push(`${notApproved.length} of ${state.illustrations.length} illustration(s) not approved: ${list}`);
+  const { interior } = require('./kdp').bookSpecs(state.book, state.illustrations.length);
+  for (const issue of interior.issues) problems.push(issue);
   if (!state.book.author.trim()) problems.push('Author name is empty (Book tab).');
   if (!state.book.title.trim()) problems.push('Title is empty.');
   return problems;
 }
 
-function write(name, bytes, rep, meta) {
-  const file = path.join(store.DIRS.exports, name);
-  storage.writeFile(file + '.json', JSON.stringify({ ...rep, ...meta }, null, 2));
+function write(state, name, bytes, rep, meta) {
+  const file = path.join(store.of(state).DIRS.exports, name);
+  storage.writeFile(file + '.json', JSON.stringify({ ...rep, ...meta, bytes: bytes.length, createdAt: new Date().toISOString() }, null, 2));
   storage.writeFile(file, Buffer.from(bytes));
   return { name, bytes: bytes.length };
 }
@@ -41,7 +45,7 @@ async function exportInterior(state, { mode = 'proof', guides = false } = {}) {
   // Proofs are saved even with warnings so you can look at them; final files only when every check passes.
   if (mode === 'final' && !rep.ok) return { ok: false, file: null, report: rep };
   const name = `${slug(state.book.title)}-interior-${mode === 'final' ? 'PRINT-READY' : guides ? 'proof-guides' : 'proof'}-${stamp()}.pdf`;
-  const file = write(name, bytes, rep, { kind: 'interior', mode, pageCount: spec.pageCount });
+  const file = write(state, name, bytes, rep, { kind: 'interior', mode, pageCount: spec.pageCount, illustrationCount: spec.illustrationCount, trim: spec.trimKey, paper: spec.paper });
   return { ok: rep.ok, file, report: rep };
 }
 
@@ -50,7 +54,7 @@ async function exportCover(state, { mode = 'template' } = {}) {
   const rep = await validateCover(bytes, manifest, state);
   if (mode === 'print' && !rep.ok) return { ok: false, file: null, report: rep };
   const name = `${slug(state.book.title)}-cover-${mode === 'print' ? 'PRINT-READY' : 'template-guides'}-${stamp()}.pdf`;
-  const file = write(name, bytes, rep, { kind: 'cover', mode, widthIn: cover.width, heightIn: cover.height, spineIn: cover.spine });
+  const file = write(state, name, bytes, rep, { kind: 'cover', mode, widthIn: cover.width, heightIn: cover.height, spineIn: cover.spine, pageCount: cover.pageCount, paper: cover.paper, trim: cover.trimKey });
   return { ok: rep.ok, file, report: rep };
 }
 

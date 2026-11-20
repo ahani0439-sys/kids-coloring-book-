@@ -87,7 +87,7 @@ async function waitSynced() {
   await stop(srv);
 
   // Simulate an interrupted generation in the persisted state, then wipe the container's disk.
-  const sf = path.join(BUCKET, 'state.json');
+  const sf = path.join(BUCKET, 'books', before.bookId, 'state.json');
   const s = JSON.parse(fs.readFileSync(sf, 'utf8'));
   s.illustrations[3].status = 'generating';
   fs.writeFileSync(sf, JSON.stringify(s));
@@ -101,13 +101,13 @@ async function waitSynced() {
   ok((await fetch(url(`/api/illustrations/1/image`), { headers: AUTH })).status === 200, '#1 image file served after restore');
   ok(il(2).status === 'review' && il(2).hasImage, '#2 still waiting for review');
   ok(il(3).status === 'rejected' && !il(3).hasImage && il(3).history.length === 1, '#3 still rejected, file not back in the book folder');
-  ok(fs.existsSync(path.join(BUCKET, 'rejected', il(3).history[0].file)) && !fs.existsSync(path.join(DATA, 'rejected', il(3).history[0].file)), 'rejected file kept safely in the bucket, not downloaded on restart');
+  ok(fs.existsSync(path.join(BUCKET, 'books', after.bookId, 'rejected', il(3).history[0].file)) && !fs.existsSync(path.join(DATA, 'books', after.bookId, 'rejected', il(3).history[0].file)), 'rejected file kept safely in the bucket, not downloaded on restart');
   ok(il(4).status === 'failed' && /interrupted/.test(il(4).error), 'interrupted generation recovered as failed with a message');
   ok(after.coverArt && (await fetch(url('/api/cover-art'), { headers: AUTH })).status === 200, 'cover art restored');
   ok(after.book.author === 'Persist Author', 'book details restored');
   ok(after.exports.some((f) => f.name === ex.json.file.name), 'exported PDF restored');
   ok((await fetch(url(`/api/files/${ex.json.file.name}`), { headers: AUTH })).status === 200, 'PDF downloadable after restore');
-  const dec = JSON.parse(fs.readFileSync(path.join(DATA, 'state.json'), 'utf8')).decisions.map((d) => d.action);
+  const dec = JSON.parse(fs.readFileSync(path.join(DATA, 'books', after.bookId, 'state.json'), 'utf8')).decisions.map((d) => d.action);
   ok(['uploaded', 'approved', 'rejected'].every((a) => dec.includes(a)), `review decisions log persisted (${dec.join(', ')})`);
   await stop(srv);
 

@@ -119,6 +119,7 @@ function kick() {
 async function flush(timeoutMs = 20000) {
   if (!remote) return true;
   const deadline = Date.now() + timeoutMs;
+  while ((pendingMoves.length || movingNow) && Date.now() < deadline) await new Promise((r) => setTimeout(r, 100));
   while (queue.size && Date.now() < deadline) {
     await (kick() || new Promise((r) => setTimeout(r, 200)));
     if (queue.size) await new Promise((r) => setTimeout(r, 300));
@@ -135,17 +136,86 @@ function writeFile(abs, data) {
   fs.writeFileSync(tmp, data);
   fs.renameSync(tmp, abs); // atomic on the same filesystem
   enqueue(relOf(abs), 'put');
+  trackWrite(relOf(abs));
 }
 function moveFile(fromAbs, toAbs) {
-  if (!fs.existsSync(fromAbs)) return;
+  if (!fs.existsSync(fromAbs)) {
+    // Not downloaded yet: the bucket copy is moved later by the queue (put needs a local file),
+    // so keep the old object and just record the new name as pending.
+    if (remote && remoteIndex.has(relOf(fromAbs))) pendingMoves.push([relOf(fromAbs), relOf(toAbs)]), kickMoves();
+    return;
+  }
   fs.mkdirSync(path.dirname(toAbs), { recursive: true });
   fs.renameSync(fromAbs, toAbs);
   enqueue(relOf(toAbs), 'put');
   enqueue(relOf(fromAbs), 'del');
+  trackWrite(relOf(toAbs)); trackDelete(relOf(fromAbs));
+}
+// Moves of files that only exist in the bucket: download, re-upload under the new name, delete old.
+const pendingMoves = [];
+let movingNow = false;
+async function kickMoves() {
+  if (movingNow) return; movingNow = true;
+  while (pendingMoves.length) {
+    const [from, to] = pendingMoves.shift();
+    try {
+      const buf = await remote.get(from);
+      const abs = path.join(ROOT, to);
+      fs.mkdirSync(path.dirname(abs), { recursive: true });
+      fs.writeFileSync(abs, buf);
+      enqueue(to, 'put'); trackWrite(to);
+      enqueue(from, 'del'); trackDelete(from);
+    } catch (e) { status.lastError = `move ${from}: ${e.message}`; }
+  }
+  movingNow = false;
 }
 function removeFile(abs) {
   fs.rmSync(abs, { force: true });
   enqueue(relOf(abs), 'del');
+  trackDelete(relOf(abs));
+}
+
+// ---------- Remote index and lazy loading ----------
+// The bucket's object list is kept in memory. On boot only the small JSON files (library and each
+// book's state) are downloaded; images and PDFs are fetched the first time they are needed.
+// This keeps cold starts fast and inside free-tier download limits, however many books exist.
+const remoteIndex = new Map(); // rel -> size
+const isEager = (rel) => rel.endsWith('.json');
+
+function trackWrite(rel) { if (remote) remoteIndex.set(rel, -1); }
+function trackDelete(rel) { remoteIndex.delete(rel); }
+
+// True if the file exists locally or in the bucket.
+function has(abs) {
+  if (fs.existsSync(abs)) return true;
+  return remote ? remoteIndex.has(relOf(abs)) : false;
+}
+// Make sure a file is on local disk before reading it (downloads it from the bucket if needed).
+async function ensureLocal(abs) {
+  if (fs.existsSync(abs)) return true;
+  if (!remote) return false;
+  const rel = relOf(abs);
+  if (!remoteIndex.has(rel)) return false;
+  const buf = await remote.get(rel);
+  fs.mkdirSync(path.dirname(abs), { recursive: true });
+  const tmp = abs + '.dl';
+  fs.writeFileSync(tmp, buf);
+  fs.renameSync(tmp, abs);
+  status.lazyDownloads = (status.lazyDownloads || 0) + 1;
+  return true;
+}
+async function ensureAllLocal(absList) {
+  for (const a of absList) await ensureLocal(a);
+}
+// Files under a folder, local or in the bucket (relative names).
+function listDir(absDir) {
+  const out = new Set();
+  if (fs.existsSync(absDir)) for (const f of fs.readdirSync(absDir)) if (!f.endsWith('.tmp') && !f.endsWith('.dl')) out.add(f);
+  if (remote) {
+    const prefix = relOf(absDir) + '/';
+    for (const rel of remoteIndex.keys()) if (rel.startsWith(prefix) && !rel.slice(prefix.length).includes('/')) out.add(rel.slice(prefix.length));
+  }
+  return [...out];
 }
 
 // Boot: bring DATA_DIR in line with the bucket. Never deletes local files; if the bucket is empty
@@ -154,28 +224,33 @@ async function restore() {
   ensureDirs();
   if (!remote) { status.restored = { files: 0, note: 'local disk' }; return status.restored; }
   const objects = await remote.list();
+  remoteIndex.clear();
+  for (const o of objects) remoteIndex.set(o.rel, o.size);
   if (!objects.length) {
     const local = mirrorAdapter(ROOT);
     const files = (await local.list()).filter((f) => !f.rel.endsWith('.tmp'));
-    for (const f of files) enqueue(f.rel, 'put');
+    for (const f of files) { enqueue(f.rel, 'put'); remoteIndex.set(f.rel, f.size); }
     await flush(120000);
     status.restored = { files: 0, uploadedExisting: files.length };
     return status.restored;
   }
   let n = 0;
   for (const o of objects) {
-    // Never needed by the running app (kept safely in the bucket): rejected images and SVG sources.
-    // Skipping them keeps each cold start well inside free-tier download limits.
-    if (o.rel.startsWith('rejected/') || o.rel.endsWith('.svg')) continue;
+    if (!isEager(o.rel)) continue; // images, PDFs, SVG sources: fetched on demand
     const abs = path.join(ROOT, o.rel);
-    if (fs.existsSync(abs) && fs.statSync(abs).size === o.size && o.rel !== 'state.json') continue;
     const buf = await remote.get(o.rel);
     fs.mkdirSync(path.dirname(abs), { recursive: true });
     fs.writeFileSync(abs, buf);
     n++;
   }
-  status.restored = { files: n, objects: objects.length };
+  status.restored = { files: n, objects: objects.length, lazy: objects.length - n };
   return status.restored;
 }
 
-module.exports = { ROOT, ensureDirs, restore, flush, writeFile, moveFile, removeFile, status: () => ({ ...status, pending: queue.size }) };
+function sizeOf(abs) {
+  if (fs.existsSync(abs)) return fs.statSync(abs).size;
+  const v = remoteIndex.get(relOf(abs));
+  return v > 0 ? v : null;
+}
+
+module.exports = { ROOT, ensureDirs, restore, flush, writeFile, moveFile, removeFile, has, ensureLocal, ensureAllLocal, listDir, sizeOf, relOf: (a) => relOf(a), status: () => ({ ...status, pending: queue.size }) };

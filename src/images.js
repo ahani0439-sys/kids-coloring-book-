@@ -6,6 +6,7 @@ const sharp = require('sharp');
 sharp.cache(false);
 sharp.concurrency(1);
 const store = require('./store');
+const { bookSpecs } = require('./kdp');
 const storage = require('./storage');
 const { config } = require('./config');
 
@@ -20,8 +21,16 @@ function providerStatus() {
   return { provider: i.provider, label: i.label, model: i.model, configured: !!(i.label && i.apiKey), free: false };
 }
 // Whether the current engine can draw this page (the built-in engine needs a designed composition).
-function canGenerate(il) {
-  return isSvg() ? engine.hasComposition(il.id) : providerStatus().configured;
+function canGenerate(bs, il) {
+  // The built-in drawings exist only for the Dino book's page designs (8.5 x 11).
+  if (isSvg()) { const b = bs.load().book; return b.drawingSet === 'dino' && (b.trim || '8.5x11') === '8.5x11' && engine.hasComposition(il.id); }
+  return providerStatus().configured;
+}
+// Print size for uploads: the book's art box at 300 DPI (depends on trim size and margins).
+function targetFor(bs) {
+  const st = bs.load();
+  const { interior } = bookSpecs(st.book, st.illustrations.length);
+  return { w: Math.ceil(interior.artBox.w * 300), h: Math.ceil(interior.artBox.h * 300) };
 }
 
 async function generateWithReplicate(prompt) {
@@ -69,7 +78,7 @@ async function generateRaw(prompt) {
 
 // Converts any image to print-ready line art: white background, pure black and white,
 // 2250 x 3000 px (3:4) tagged 300 DPI. Keeps the source size for the upscale warning.
-async function prepareLineArt(input) {
+async function prepareLineArt(input, target = TARGET) {
   let meta;
   try { meta = await sharp(input).metadata(); } catch { meta = {}; }
   if (!meta.width || !meta.height) {
@@ -79,18 +88,18 @@ async function prepareLineArt(input) {
     .rotate()
     .flatten({ background: '#ffffff' })
     .grayscale()
-    .resize(TARGET.w, TARGET.h, { fit: 'contain', background: '#ffffff', kernel: 'lanczos3' })
+    .resize(target.w, target.h, { fit: 'contain', background: '#ffffff', kernel: 'lanczos3' })
     .threshold(170)
     .png({ compressionLevel: 9, palette: true, colors: 2 })
     .withMetadata({ density: 300 })
     .toBuffer();
-  return { buffer: out, sourcePx: { w: meta.width, h: meta.height }, px: TARGET };
+  return { buffer: out, sourcePx: { w: meta.width, h: meta.height }, px: target };
 }
 
-function saveCandidate(il, prepared, origin) {
-  const file = `il-${String(il.id).padStart(2, '0')}-${Date.now()}-${crypto.randomBytes(3).toString('hex')}.png`;
-  storage.writeFile(store.imagePath(file), prepared.buffer);
-  if (il.image) archive(il, 'replaced');
+function saveCandidate(bs, il, prepared, origin) {
+  const file = `il-${String(il.id).padStart(3, '0')}-${Date.now()}-${crypto.randomBytes(3).toString('hex')}.png`;
+  storage.writeFile(bs.imagePath(file), prepared.buffer);
+  if (il.image) archive(bs, il, 'replaced');
   il.image = { file, origin, sourcePx: prepared.sourcePx, px: prepared.px, createdAt: new Date().toISOString() };
   il.status = 'review';
   il.error = null;
@@ -99,9 +108,9 @@ function saveCandidate(il, prepared, origin) {
 
 // Moves the current image out of the book folder so it can never be placed again.
 // Rejected files are kept (in rejected/) rather than deleted.
-function archive(il, reason) {
+function archive(bs, il, reason) {
   if (!il.image) return;
-  storage.moveFile(store.imagePath(il.image.file), path.join(store.DIRS.rejected, path.basename(il.image.file)));
+  storage.moveFile(bs.imagePath(il.image.file), path.join(bs.DIRS.rejected, path.basename(il.image.file)));
   il.history.push({ ...il.image, reason, at: new Date().toISOString() });
   il.image = null;
 }
@@ -118,11 +127,11 @@ const waiting = [];
 let active = 0;
 let batch = null; // { ids, total, done, failed, startedAt } for "Generate all drafts" progress
 
-function startBatch(ids) {
-  batch = { ids, total: ids.length, done: 0, failed: 0, startedAt: new Date().toISOString() };
+function startBatch(bookId, ids) {
+  batch = { bookId, ids, total: ids.length, done: 0, failed: 0, startedAt: new Date().toISOString() };
 }
-function batchStatus() {
-  if (!batch) return null;
+function batchStatus(bookId) {
+  if (!batch || batch.bookId !== bookId) return null;
   return { total: batch.total, done: batch.done, failed: batch.failed, running: batch.done < batch.total, startedAt: batch.startedAt };
 }
 
@@ -133,14 +142,16 @@ function usageToday(state) {
 }
 
 // Returns an error string, or null when the page was queued.
-function queueGeneration(il) {
-  const state = store.load();
+function queueGeneration(bs, il) {
+  const state = bs.load();
   const st = providerStatus();
   if (!st.configured) return 'Image generation is not configured on the server yet. Set IMAGE_PROVIDER and its API key, or upload an image instead.';
   if (il.status === 'generating') return 'Already generating.';
   if (il.status === 'approved') return 'Approved images are locked. Reject it first to replace it.';
   if (isSvg()) {
-    if (!engine.hasComposition(il.id)) return `The drawing for page ${il.id} has not been designed yet. Pages with drawings: ${engine.available().join(', ')}.`;
+    if (!canGenerate(bs, il)) return state.book.drawingSet === 'dino'
+      ? `The drawing for page ${il.id} has not been designed yet. Pages with drawings: ${engine.available().join(', ')}. Upload works for every page.`
+      : 'The built-in drawings only exist for the Dino book. Upload your illustration for this page instead.';
   } else {
     const u = usageToday(state);
     const queued = state.illustrations.filter((i) => i.status === 'generating').length;
@@ -148,23 +159,25 @@ function queueGeneration(il) {
   }
   il.status = 'generating';
   il.error = null;
-  store.save();
-  waiting.push(il.id);
+  bs.save();
+  waiting.push({ bookId: bs.id, id: il.id });
   pump();
   return null;
 }
 
 function pump() {
   while (active < config.image.concurrency && waiting.length) {
-    const id = waiting.shift();
+    const job = waiting.shift();
     active++;
-    run(id).finally(() => { active--; pump(); });
+    run(job).finally(() => { active--; pump(); });
   }
 }
 
-async function run(id) {
-  const state = store.load();
-  const il = store.getIllustration(id);
+async function run({ bookId, id }) {
+  const bs = store.library.get(bookId);
+  if (!bs) return;
+  const state = bs.load();
+  const il = bs.getIllustration(id);
   if (!il || il.status !== 'generating') return;
   try {
     if (isSvg()) {
@@ -173,24 +186,24 @@ async function run(id) {
       const png = await engine.render(g.svg);
       const q = await engine.inspect(png);
       if (q.ink < 0.02 || q.grayPixels > 0) throw new Error('The drawing failed the quality check (blank or gray). Try again.');
-      saveCandidate(il, { buffer: png, sourcePx: { w: q.width, h: q.height }, px: TARGET }, 'svg-engine');
+      saveCandidate(bs, il, { buffer: png, sourcePx: { w: q.width, h: q.height }, px: TARGET }, 'svg-engine');
       const svgFile = il.image.file.replace(/\.png$/, '.svg');
-      storage.writeFile(store.imagePath(svgFile), g.svg);
+      storage.writeFile(bs.imagePath(svgFile), g.svg);
       Object.assign(il.image, { engine: g.engine, seed: g.seed, composition: g.composition, drawing: g.name, svgFile, quality: { ink: +q.ink.toFixed(4), regions: q.regions, tinyRegions: q.tinyRegions } });
     } else {
       const raw = await generateRaw(il.prompt);
       const u = usageToday(state);
       u.generations++; u.total = (u.total || 0) + 1;
-      const prepared = await prepareLineArt(raw);
-      saveCandidate(il, prepared, `${config.image.provider}:${config.image.model}`);
+      const prepared = await prepareLineArt(raw, targetFor(bs));
+      saveCandidate(bs, il, prepared, `${config.image.provider}:${config.image.model}`);
     }
-    store.logDecision(il, 'generated', { seed: il.image.seed });
+    bs.logDecision(il, 'generated', { seed: il.image.seed });
   } catch (e) {
     il.status = il.image ? 'review' : 'failed';
     il.error = e.message;
   }
-  if (batch && batch.ids.includes(id)) { batch.done++; if (il.status === 'failed') batch.failed++; }
-  store.save();
+  if (batch && batch.bookId === bookId && batch.ids.includes(id)) { batch.done++; if (il.status === 'failed') batch.failed++; }
+  bs.save();
 }
 
-module.exports = { TARGET, canGenerate, startBatch, batchStatus, providerStatus, generateRaw, prepareLineArt, saveCandidate, archive, prepareCoverArt, queueGeneration, usageToday };
+module.exports = { TARGET, targetFor, canGenerate, startBatch, batchStatus, providerStatus, generateRaw, prepareLineArt, saveCandidate, archive, prepareCoverArt, queueGeneration, usageToday };

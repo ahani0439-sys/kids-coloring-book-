@@ -3,7 +3,8 @@ const fs = require('fs');
 const path = require('path');
 const sharp = require('sharp');
 const { PDFDocument, rgb, degrees } = require('pdf-lib');
-const { PT, computeCover, computeInterior } = require('./kdp');
+const { PT, bookSpecs } = require('./kdp');
+const storage = require('./storage');
 const { embedFonts, drawTextBlock, hexToRgb, textBlockHeight, embedLineArt, drawXObject } = require('./pdfkit');
 const store = require('./store');
 
@@ -24,8 +25,11 @@ async function embedImage(doc, file) {
 // mode: 'template' (guides + placeholders) or 'print' (no guides, must have art).
 async function buildCover(state, { mode = 'template' } = {}) {
   const book = state.book;
-  const interior = computeInterior({ includeIntro: book.includeIntro, margins: book.margins, illustrationCount: state.illustrations.length });
-  const c = computeCover(interior.pageCount, book.paper || 'white');
+  const B = store.of(state);
+  const { cover: c } = bookSpecs(book, state.illustrations.length);
+  const coverArtFile = state.coverArt ? path.join(B.DIRS.cover, state.coverArt.file) : null;
+  const approvedFiles = state.illustrations.map((il) => B.approvedImageFile(il)).filter(Boolean);
+  await storage.ensureAllLocal([coverArtFile, ...approvedFiles.slice(0, 5)].filter(Boolean));
   const doc = await PDFDocument.create();
   doc.setTitle(`${book.title} – cover`);
   doc.setAuthor(book.author || '');
@@ -53,10 +57,10 @@ async function buildCover(state, { mode = 'template' } = {}) {
 
   // Cover art priority: uploaded cover art, then approved illustration 1, then placeholder.
   let artFile = null, artSource = null;
-  if (state.coverArt && fs.existsSync(path.join(store.DIRS.cover, state.coverArt.file))) {
-    artFile = path.join(store.DIRS.cover, state.coverArt.file); artSource = 'uploaded cover art';
+  if (coverArtFile && fs.existsSync(coverArtFile)) {
+    artFile = coverArtFile; artSource = 'uploaded cover art';
   } else {
-    const first = state.illustrations.map((il) => store.approvedImageFile(il)).find(Boolean);
+    const first = approvedFiles[0];
     if (first) { artFile = first; artSource = 'approved illustration'; }
   }
   if (artFile) {
@@ -86,7 +90,7 @@ async function buildCover(state, { mode = 'template' } = {}) {
   by = drawTextBlock(page, book.description, { font: f.body, size: 13, x0: bx0, x1: bx1, topY: by - 0.15 * PT, align: 'left', color: rgb(0.1, 0.15, 0.12), lineGap: 1.35, boxes: manifest.boxes, label: 'back description' });
 
   // Up to four approved thumbnails, only where they fit above the barcode band.
-  const approved = state.illustrations.map((il) => store.approvedImageFile(il)).filter(Boolean).slice(1, 5);
+  const approved = approvedFiles.slice(1, 5);
   const barTop = c.barcode.y + c.barcode.h;
   const thumbTop = by / PT - 0.3, thumbBottom = barTop + 0.3;
   if (approved.length && thumbTop - thumbBottom > 1.2) {

@@ -1,4 +1,5 @@
-// Book copy, KDP metadata suggestions and the 30 illustration prompts.
+// Book copy, KDP metadata suggestions and illustration prompts.
+// The Dino book has 30 hand-written subjects; other books (any theme, any count) get numbered pages.
 
 const STYLE =
   "children's coloring book page, cute and friendly cartoon style, simple rounded shapes, " +
@@ -50,6 +51,9 @@ const ILLUSTRATIONS = SUBJECTS.map(([title, subject], i) => ({
 const DEFAULT_BOOK = {
   title: 'Dino Buddies Coloring Book',
   subtitle: '30 Cute and Friendly Dinosaurs to Color for Kids Ages 4–8',
+  theme: 'Cute and friendly dinosaurs',
+  trim: '8.5x11',
+  drawingSet: 'dino', // the built-in drawing engine has designs for this book's pages
   author: '',
   year: new Date().getFullYear(),
   publisherNote: 'All rights reserved. No part of this book may be reproduced in any form without written permission from the author, except for personal coloring use.',
@@ -78,4 +82,47 @@ const DEFAULT_BOOK = {
   cover: { background: '#CFEBD6', accent: '#2F6B4F' },
 };
 
-module.exports = { STYLE, ILLUSTRATIONS, DEFAULT_BOOK };
+// ---------- any theme, any number of illustrations ----------
+const isDinoTheme = (theme) => /dino/i.test(theme || '');
+
+function illustrationFor(id, theme) {
+  if (isDinoTheme(theme) && id <= SUBJECTS.length) {
+    const [title, subject] = SUBJECTS[id - 1];
+    return { id, title, prompt: `${STYLE}. Subject: ${subject}.` };
+  }
+  const t = (theme || 'cute animals').trim();
+  return { id, title: `Page ${id}`, prompt: `${STYLE}. Subject: a cute, friendly ${t} scene (idea ${id}).` };
+}
+
+function freshIllustration(id, theme) {
+  const il = illustrationFor(id, theme);
+  return { id, title: il.title, prompt: il.prompt, status: 'empty', image: null, history: [], regenerateRequested: false, error: null };
+}
+
+function newBookSettings({ title, theme, illustrationCount, includeIntro = true, trim = '8.5x11', paper = 'white', author = '' }) {
+  const n = illustrationCount;
+  const t = (theme || 'Cute animals').trim();
+  const T = t.charAt(0).toUpperCase() + t.slice(1);
+  const dino = isDinoTheme(t);
+  return {
+    ...JSON.parse(JSON.stringify(DEFAULT_BOOK)),
+    title: title || `${T} Coloring Book`,
+    subtitle: `${n} ${T} Coloring Pages for Kids`,
+    theme: t,
+    author,
+    trim,
+    paper,
+    includeIntro,
+    drawingSet: dino ? 'dino' : null,
+    description:
+      `${n} big, simple ${t.toLowerCase()} pictures made for little hands to color.\n\n` +
+      'Inside you will find:\n' +
+      `• ${n} unique illustrations with thick, bold outlines\n` +
+      '• Large spaces that are easy to color\n' +
+      '• One picture per page with a blank back, so markers will not ruin the next drawing\n\n' +
+      'A great gift for birthdays, holidays, road trips and quiet time.',
+    keywords: [`${t.toLowerCase()} coloring book for kids`, `${t.toLowerCase()} coloring pages`, 'coloring book for toddlers', 'easy coloring book for kids', 'activity book for boys and girls', 'big simple pictures to color', `${t.toLowerCase()} gifts for kids`].map((k) => k.slice(0, 50)),
+  };
+}
+
+module.exports = { STYLE, SUBJECTS, ILLUSTRATIONS, DEFAULT_BOOK, isDinoTheme, illustrationFor, freshIllustration, newBookSettings };

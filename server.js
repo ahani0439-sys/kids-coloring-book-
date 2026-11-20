@@ -9,7 +9,7 @@ const { config, publicConfig } = require('./src/config');
 const storage = require('./src/storage');
 const store = require('./src/store');
 const images = require('./src/images');
-const { computeInterior, computeCover, KDP } = require('./src/kdp');
+const { KDP, TRIMS, PAPERS, bookSpecs, maxIllustrations } = require('./src/kdp');
 const { exportInterior, exportCover, preflightFinal } = require('./src/exporter');
 
 if (config.production && !config.password) {
@@ -70,39 +70,87 @@ app.use(express.json({ limit: '1mb' }));
 app.use(express.static(path.join(__dirname, 'public'), { extensions: ['html'] }));
 app.get('/healthz', (req, res) => res.send('ok'));
 
-const wrap = (fn) => (req, res) => Promise.resolve(fn(req, res)).catch((e) => { console.error(e); res.status(500).json({ error: e.message }); });
+const wrap = (fn) => (req, res) => Promise.resolve(fn(req, res)).catch((e) => { console.error(e); res.status(e.status || 500).json({ error: e.message }); });
+const { library } = store;
+
+// One PDF build at a time: big books take minutes on a small server and must not overlap in memory.
+let exportChain = Promise.resolve();
+function exclusive(fn) { const p = exportChain.then(fn, fn); exportChain = p.catch(() => {}); return p; }
 
 function specs(state) {
-  const interior = computeInterior({ includeIntro: state.book.includeIntro, margins: state.book.margins, illustrationCount: state.illustrations.length });
-  const cover = computeCover(interior.pageCount, state.book.paper || 'white');
-  return { interior, cover, kdp: KDP };
+  return { ...bookSpecs(state.book, state.illustrations.length), kdp: KDP };
 }
-function publicState() {
-  const s = store.load();
+function publicState(bs) {
+  const s = bs.load();
   const u = images.usageToday(s);
   return {
+    bookId: bs.id,
     book: s.book,
-    illustrations: s.illustrations.map((il) => ({ ...il, hasImage: !!(il.image && fs.existsSync(store.imagePath(il.image.file))), canGenerate: images.canGenerate(il) })),
-    batch: images.batchStatus(),
+    illustrations: s.illustrations.map((il) => ({ ...il, hasImage: !!(il.image && storage.has(bs.imagePath(il.image.file))), canGenerate: images.canGenerate(bs, il) })),
+    batch: images.batchStatus(bs.id),
     coverArt: s.coverArt,
     autoExport: s.autoExport || null,
+    exportJob: s.exportJob || null,
+    migratedFrom: s.migratedFrom || null,
     specs: specs(s),
-    exports: store.listExports(),
+    exports: bs.listExports(),
     config: publicConfig(),
     usage: { today: u.generations, total: u.total || 0, maxPerDay: config.image.maxPerDay },
     storage: storage.status(),
     finalBlockers: preflightFinal(s),
   };
 }
+function libraryState() {
+  return { books: library.summaries(), defaultBookId: library.defaultId(), migratedFrom: library.load().migratedFrom || null, trims: TRIMS, papers: PAPERS, config: publicConfig(), storage: storage.status() };
+}
 
-app.get('/api/state', (req, res) => res.json(publicState()));
+// ---------- library: create, list, rename, duplicate, archive, open ----------
+app.get('/api/books', (req, res) => res.json(libraryState()));
 
-app.put('/api/book', (req, res) => {
-  const s = store.load();
+// Live calculation for the New Book form: page count, spine and cover size before anything is created.
+app.get('/api/kdp/preview', (req, res) => {
+  const n = Math.max(1, Math.min(1000, Math.floor(Number(req.query.count) || 30)));
+  const book = { includeIntro: req.query.intro !== '0', trim: TRIMS[req.query.trim] ? req.query.trim : '8.5x11', paper: PAPERS[req.query.paper] ? req.query.paper : 'white', margins: {} };
+  const { interior, cover } = bookSpecs(book, n);
+  res.json({ illustrations: n, pageCount: interior.pageCount, frontMatterPages: interior.frontMatterPages, blankBacks: n, minPages: interior.minPages, maxPages: interior.maxPages,
+    maxIllustrations: maxIllustrations(book.trim, book.paper, book.includeIntro), insideMargin: interior.margins.inside, insideRaised: interior.insideRaised,
+    spine: cover.spine, coverWidth: cover.width, coverHeight: cover.height, spineTextAllowed: cover.spineTextAllowed, issues: interior.issues });
+});
+
+app.post('/api/books', (req, res) => {
+  const b = req.body || {};
+  const book = { includeIntro: b.includeIntro !== false, trim: TRIMS[b.trim] ? b.trim : '8.5x11', paper: PAPERS[b.paper] ? b.paper : 'white', margins: {} };
+  const n = Math.floor(Number(b.illustrationCount));
+  const { interior } = bookSpecs(book, n || 1);
+  if (!n || n < 1) return res.status(400).json({ error: 'Enter how many illustrations the book should have.' });
+  if (interior.issues.length) return res.status(400).json({ error: interior.issues.join(' ') });
+  const bs = library.create({ title: String(b.title || '').trim().slice(0, 200), theme: String(b.theme || '').trim().slice(0, 120), illustrationCount: n, ...book, author: String(b.author || '').slice(0, 120) });
+  library.open(bs.id);
+  res.status(201).json({ bookId: bs.id, library: libraryState(), state: publicState(bs) });
+});
+app.put('/api/books/:bookId/title', wrap(async (req, res) => { library.rename(req.params.bookId, req.body?.title); res.json(libraryState()); }));
+app.post('/api/books/:bookId/duplicate', wrap(async (req, res) => {
+  const bs = await library.duplicate(req.params.bookId, req.body?.title);
+  res.status(201).json({ bookId: bs.id, library: libraryState() });
+}));
+app.post('/api/books/:bookId/archive', wrap(async (req, res) => { library.setArchived(req.params.bookId, req.body?.archived !== false); res.json(libraryState()); }));
+app.post('/api/books/:bookId/open', wrap(async (req, res) => {
+  if (!library.get(req.params.bookId)) return res.status(404).json({ error: 'Book not found' });
+  library.open(req.params.bookId); res.json(libraryState());
+}));
+
+// ---------- one book (mounted at /api/books/:bookId and, for older links, at /api for the open book) ----------
+const book = express.Router({ mergeParams: true });
+
+book.get('/state', (req, res) => res.json(publicState(req.bs)));
+
+book.put('/book', wrap(async (req, res) => {
+  const bs = req.bs, s = bs.load();
   const b = req.body || {};
   const str = (v, max) => String(v ?? '').slice(0, max);
-  if ('title' in b) s.book.title = str(b.title, 200);
+  if ('title' in b) s.book.title = str(b.title, 200) || s.book.title;
   if ('subtitle' in b) s.book.subtitle = str(b.subtitle, 200);
+  if ('theme' in b) s.book.theme = str(b.theme, 120);
   if ('author' in b) s.book.author = str(b.author, 120);
   if ('isbn' in b) s.book.isbn = str(b.isbn, 20);
   if ('year' in b) s.book.year = Number(b.year) || new Date().getFullYear();
@@ -110,65 +158,74 @@ app.put('/api/book', (req, res) => {
   if ('publisherNote' in b) s.book.publisherNote = str(b.publisherNote, 1000);
   if (Array.isArray(b.keywords)) s.book.keywords = b.keywords.slice(0, 7).map((k) => str(k, 50));
   if ('includeIntro' in b) s.book.includeIntro = !!b.includeIntro;
+  if (TRIMS[b.trim]) s.book.trim = b.trim;
+  if (PAPERS[b.paper]) s.book.paper = b.paper;
   if (b.margins) for (const k of ['inside', 'outside', 'top', 'bottom']) if (k in b.margins) s.book.margins[k] = Math.max(0, Math.min(2, Number(b.margins[k]) || 0));
   if (b.cover) for (const k of ['background', 'accent']) if (/^#[0-9a-f]{6}$/i.test(b.cover[k] || '')) s.book.cover[k] = b.cover[k];
-  store.save();
-  res.json(publicState());
-});
+  if ('illustrationCount' in b && Number(b.illustrationCount) !== s.illustrations.length) {
+    const n = Math.floor(Number(b.illustrationCount));
+    const { interior } = bookSpecs(s.book, n || 1);
+    if (interior.issues.length) { const e = new Error(interior.issues.join(' ')); e.status = 400; throw e; }
+    try { bs.resize(n); } catch (err) { err.status = 409; throw err; }
+  }
+  bs.save();
+  res.json(publicState(bs));
+}));
 
-app.put('/api/illustrations/:id/prompt', (req, res) => {
-  const il = store.getIllustration(req.params.id);
+book.put('/illustrations/:id/prompt', (req, res) => {
+  const il = req.bs.getIllustration(req.params.id);
   if (!il) return res.status(404).json({ error: 'Not found' });
   il.prompt = String(req.body.prompt || '').slice(0, 2000) || il.prompt;
-  store.save();
-  res.json(publicState());
+  req.bs.save();
+  res.json(publicState(req.bs));
 });
 
-app.post('/api/illustrations/:id/generate', (req, res) => {
-  const il = store.getIllustration(req.params.id);
+book.post('/illustrations/:id/generate', (req, res) => {
+  const il = req.bs.getIllustration(req.params.id);
   if (!il) return res.status(404).json({ error: 'Not found' });
-  const err = images.queueGeneration(il);
+  const err = images.queueGeneration(req.bs, il);
   if (err) return res.status(409).json({ error: err });
-  res.status(202).json(publicState());
+  res.status(202).json(publicState(req.bs));
 });
 
 // "Generate all drafts": queue every page that still needs art and that the engine can draw.
 // Approved pages are never touched. Progress is reported in state.batch.
-app.post('/api/generate-missing', (req, res) => {
-  const s = store.load();
+book.post('/generate-missing', (req, res) => {
+  const bs = req.bs, s = bs.load();
   const todo = s.illustrations.filter((il) => ['empty', 'rejected', 'failed'].includes(il.status));
-  const drawable = todo.filter((il) => images.canGenerate(il));
-  const skipped = todo.filter((il) => !images.canGenerate(il)).map((il) => il.id);
+  const drawable = todo.filter((il) => images.canGenerate(bs, il));
+  const skipped = todo.filter((il) => !images.canGenerate(bs, il)).map((il) => il.id);
   const ids = [];
   let stop = null;
   for (const il of drawable) {
-    const err = images.queueGeneration(il);
+    const err = images.queueGeneration(bs, il);
     if (err) { stop = err; break; }
     ids.push(il.id);
   }
-  if (ids.length) images.startBatch(ids);
-  const notes = [stop, skipped.length ? `${skipped.length} page(s) have no drawing designed yet (${skipped.join(', ')}).` : null].filter(Boolean).join(' ');
+  if (ids.length) images.startBatch(bs.id, ids);
+  const short = skipped.length > 10 ? `${skipped.slice(0, 10).join(', ')} and ${skipped.length - 10} more` : skipped.join(', ');
+  const notes = [stop, skipped.length ? `${skipped.length} page(s) have no drawing designed yet (${short}). Upload works for those.` : null].filter(Boolean).join(' ');
   if (!ids.length) return res.status(409).json({ error: notes || 'Nothing to generate: every page already has art waiting or approved.' });
-  res.status(202).json({ queued: ids.length, note: notes || null, state: publicState() });
+  res.status(202).json({ queued: ids.length, note: notes || null, state: publicState(bs) });
 });
 
-app.post('/api/illustrations/:id/upload', upload.single('image'), wrap(async (req, res) => {
-  const il = store.getIllustration(req.params.id);
+book.post('/illustrations/:id/upload', upload.single('image'), wrap(async (req, res) => {
+  const bs = req.bs, il = bs.getIllustration(req.params.id);
   if (!il) return res.status(404).json({ error: 'Not found' });
   if (!req.file) return res.status(400).json({ error: 'No file received' });
   if (il.status === 'approved') return res.status(409).json({ error: 'Approved images are locked. Reject it first to replace it.' });
   if (il.status === 'generating') return res.status(409).json({ error: 'A generation is running for this page. Wait for it to finish.' });
-  const prepared = await images.prepareLineArt(req.file.buffer);
-  images.saveCandidate(il, prepared, 'upload');
-  store.logDecision(il, 'uploaded');
-  store.save();
-  res.json(publicState());
+  const prepared = await images.prepareLineArt(req.file.buffer, images.targetFor(bs));
+  images.saveCandidate(bs, il, prepared, 'upload');
+  bs.logDecision(il, 'uploaded');
+  bs.save();
+  res.json(publicState(bs));
 }));
 
-app.post('/api/illustrations/:id/:action', wrap(async (req, res) => {
+book.post('/illustrations/:id/:action', wrap(async (req, res) => {
   if (!['approve', 'reject', 'regenerate', 'reset'].includes(req.params.action)) return res.status(404).json({ error: 'Unknown action' });
-  const s = store.load();
-  const il = store.getIllustration(req.params.id);
+  const bs = req.bs, s = bs.load();
+  const il = bs.getIllustration(req.params.id);
   if (!il) return res.status(404).json({ error: 'Not found' });
   if (il.status === 'generating') return res.status(409).json({ error: 'A generation is running for this page. Wait for it to finish.' });
   const action = req.params.action;
@@ -181,99 +238,129 @@ app.post('/api/illustrations/:id/:action', wrap(async (req, res) => {
     if (il.status !== 'review' || !il.image) return res.status(409).json({ error: 'Only an image waiting for review can be approved.' });
     il.status = 'approved';
     il.approvedAt = new Date().toISOString();
-    store.logDecision(il, 'approved');
+    bs.logDecision(il, 'approved');
   } else if (action === 'reject') {
     if (!il.image) return res.status(409).json({ error: 'There is no image to reject.' });
-    store.logDecision(il, 'rejected');
-    images.archive(il, 'rejected');
+    bs.logDecision(il, 'rejected');
+    images.archive(bs, il, 'rejected');
     il.status = 'rejected';
   } else if (action === 'regenerate') {
-    if (il.image) { store.logDecision(il, 'regenerate requested'); images.archive(il, 'regenerate requested'); }
+    if (il.image) { bs.logDecision(il, 'regenerate requested'); images.archive(bs, il, 'regenerate requested'); }
     il.regenerateRequested = true;
     il.status = 'rejected';
-    note = images.queueGeneration(il); // may refuse (no provider, daily cap); the rejection still stands
+    note = images.queueGeneration(bs, il); // may refuse (no drawing for this page, daily cap); the rejection still stands
   } else if (action === 'reset') {
-    if (il.image) { store.logDecision(il, 'reset'); images.archive(il, 'reset'); }
+    if (il.image) { bs.logDecision(il, 'reset'); images.archive(bs, il, 'reset'); }
     il.status = 'empty';
   }
-  store.save();
+  bs.save();
 
-  // Once every illustration is approved, assemble the final files automatically, in the background
-  // (it takes 1-2 minutes on a small free server), so the Approve tap answers right away.
-  if (action === 'approve' && s.illustrations.every((i) => store.approvedImageFile(i))) {
+  // Once every required illustration is approved, assemble the final files automatically, in the
+  // background (it can take minutes on a small free server), so the Approve tap answers right away.
+  if (action === 'approve' && s.illustrations.every((i) => bs.approvedImageFile(i))) {
     s.autoExport = { at: new Date().toISOString(), status: 'running' };
-    store.save();
-    setImmediate(async () => {
+    bs.save();
+    exclusive(async () => {
       try {
         const interior = await exportInterior(s, { mode: 'final' });
         const cover = await exportCover(s, { mode: 'print' });
-        s.autoExport = { at: new Date().toISOString(), status: 'done', interior: { ok: interior.ok, file: interior.file?.name || null }, cover: { ok: cover.ok, file: cover.file?.name || null } };
+        const why = (out) => out.ok ? [] : out.report.checks.filter((c) => c.status === 'fail').map((c) => c.label + (c.detail ? ` (${c.detail})` : ''));
+        s.autoExport = { at: new Date().toISOString(), status: 'done', interior: { ok: interior.ok, file: interior.file?.name || null, problems: why(interior) }, cover: { ok: cover.ok, file: cover.file?.name || null, problems: why(cover) } };
       } catch (e) {
         s.autoExport = { at: new Date().toISOString(), status: 'failed', error: e.message };
       }
-      store.save();
+      bs.save();
     });
   }
-  res.json({ ...publicState(), note });
+  res.json({ ...publicState(bs), note });
 }));
 
-app.get('/api/illustrations/:id/image', (req, res) => {
-  const il = store.getIllustration(req.params.id);
+book.get('/illustrations/:id/image', wrap(async (req, res) => {
+  const bs = req.bs, il = bs.getIllustration(req.params.id);
   if (!il || !il.image) return res.status(404).end();
-  const file = store.imagePath(il.image.file);
-  if (!fs.existsSync(file)) return res.status(404).end();
+  const file = bs.imagePath(il.image.file);
+  if (!(await storage.ensureLocal(file))) return res.status(404).end();
   res.set('Cache-Control', 'private, max-age=31536000, immutable').sendFile(file);
-});
+}));
 
-app.post('/api/cover-art', upload.single('image'), wrap(async (req, res) => {
-  const s = store.load();
+book.post('/cover-art', upload.single('image'), wrap(async (req, res) => {
+  const bs = req.bs, s = bs.load();
   if (!req.file) return res.status(400).json({ error: 'No file received' });
   const buf = await images.prepareCoverArt(req.file.buffer);
   const file = `cover-${Date.now()}.jpg`;
-  storage.writeFile(path.join(store.DIRS.cover, file), buf);
+  storage.writeFile(path.join(bs.DIRS.cover, file), buf);
   const meta = await sharp(buf).metadata();
   s.coverArt = { file, px: { w: meta.width, h: meta.height }, at: new Date().toISOString() };
-  store.save();
-  res.json(publicState());
+  bs.save();
+  res.json(publicState(bs));
 }));
-app.delete('/api/cover-art', (req, res) => { const s = store.load(); s.coverArt = null; store.save(); res.json(publicState()); });
-app.get('/api/cover-art', (req, res) => {
-  const s = store.load();
-  const file = s.coverArt && path.join(store.DIRS.cover, s.coverArt.file);
-  if (!file || !fs.existsSync(file)) return res.status(404).end();
+book.delete('/cover-art', (req, res) => { const s = req.bs.load(); s.coverArt = null; req.bs.save(); res.json(publicState(req.bs)); });
+book.get('/cover-art', wrap(async (req, res) => {
+  const s = req.bs.load();
+  const file = s.coverArt && path.join(req.bs.DIRS.cover, s.coverArt.file);
+  if (!file || !(await storage.ensureLocal(file))) return res.status(404).end();
   res.sendFile(file);
-});
-
-app.post('/api/export/interior', wrap(async (req, res) => {
-  const mode = req.body.mode === 'final' ? 'final' : 'proof';
-  const out = await exportInterior(store.load(), { mode, guides: !!req.body.guides });
-  res.json({ ...out, state: publicState() });
 }));
-app.post('/api/export/cover', wrap(async (req, res) => {
-  const mode = req.body.mode === 'print' ? 'print' : 'template';
-  const out = await exportCover(store.load(), { mode });
-  res.json({ ...out, state: publicState() });
+
+// Builds run one at a time. With { background: true } the request answers at once and the result
+// appears in state.exportJob (the app polls); without it the request waits for the result.
+book.post('/export/:kind', wrap(async (req, res) => {
+  const kind = req.params.kind;
+  if (!['interior', 'cover'].includes(kind)) return res.status(404).json({ error: 'Unknown export' });
+  const bs = req.bs, s = bs.load();
+  const mode = kind === 'interior' ? (req.body.mode === 'final' ? 'final' : 'proof') : (req.body.mode === 'print' ? 'print' : 'template');
+  const run = () => (kind === 'interior' ? exportInterior(s, { mode, guides: !!req.body.guides }) : exportCover(s, { mode }));
+  if (!req.body.background) {
+    const out = await exclusive(run);
+    return res.json({ ...out, state: publicState(bs) });
+  }
+  if (s.exportJob?.status === 'running') return res.status(409).json({ error: 'A PDF is already being built for this book. Wait for it to finish.' });
+  s.exportJob = { kind, mode, guides: !!req.body.guides, status: 'running', startedAt: new Date().toISOString() };
+  bs.save();
+  exclusive(async () => {
+    try {
+      const out = await run();
+      s.exportJob = { ...s.exportJob, status: 'done', finishedAt: new Date().toISOString(), ok: out.ok, file: out.file?.name || null, report: out.report };
+    } catch (e) {
+      s.exportJob = { ...s.exportJob, status: 'failed', finishedAt: new Date().toISOString(), error: e.message };
+    }
+    bs.save();
+  });
+  res.status(202).json({ started: true, state: publicState(bs) });
 }));
 
 // Downloads: served as attachments so iPhone Safari offers "Download" / save to Files.
-app.get('/api/files/:name', (req, res) => {
+book.get('/files/:name', wrap(async (req, res) => {
   const name = path.basename(req.params.name);
-  const file = path.join(store.DIRS.exports, name);
-  if (!name.endsWith('.pdf') || !fs.existsSync(file)) return res.status(404).send('File not found');
+  const file = path.join(req.bs.DIRS.exports, name);
+  if (!name.endsWith('.pdf') || !(await storage.ensureLocal(file))) return res.status(404).send('File not found');
   if (req.query.view) return res.type('application/pdf').sendFile(file);
   res.download(file, name);
-});
-app.delete('/api/files/:name', (req, res) => {
+}));
+book.delete('/files/:name', (req, res) => {
   const name = path.basename(req.params.name);
-  const file = path.join(store.DIRS.exports, name);
-  if (name.endsWith('.pdf') && fs.existsSync(file)) { storage.removeFile(file); storage.removeFile(file + '.json'); }
-  res.json(publicState());
+  const file = path.join(req.bs.DIRS.exports, name);
+  if (name.endsWith('.pdf') && storage.has(file)) { storage.removeFile(file); storage.removeFile(file + '.json'); }
+  res.json(publicState(req.bs));
 });
+
+app.use('/api/books/:bookId', (req, res, next) => {
+  req.bs = library.get(req.params.bookId);
+  if (!req.bs) return res.status(404).json({ error: 'Book not found' });
+  next();
+}, book);
+app.use('/api', (req, res, next) => {
+  req.bs = library.get(library.defaultId());
+  if (!req.bs) return res.status(404).json({ error: 'No book is open. Create one on the Books tab.' });
+  next();
+}, book);
 
 async function start() {
   for (const p of config.problems) console.warn('[config]', p);
   const restored = await storage.restore(); // before any request can read or write state
-  store.load();
+  const migrated = await store.migrateLegacy(); // one-time copy of single-book data into the library
+  if (migrated) console.log('[library]', JSON.stringify(migrated));
+  for (const b of library.summaries()) if (!b.missing) library.get(b.id).load(); // validate every book's state
   console.log(`[storage] ${config.storage.backend}: ${JSON.stringify(restored)} · data in ${storage.ROOT}`);
   console.log(`[images] provider=${config.image.provider} model=${config.image.model || '-'} configured=${images.providerStatus().configured}`);
   const server = app.listen(config.port, () => console.log(`Dino Book Factory listening on :${config.port}`));

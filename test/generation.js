@@ -67,7 +67,8 @@ async function run(provider, mock) {
   let s;
   for (let i = 0; i < 100; i++) { s = (await api('/api/state')).json; if (!s.illustrations.some((x) => x.status === 'generating')) break; await sleep(100); }
   const inReview = s.illustrations.filter((x) => x.status === 'review');
-  ok(inReview.length === 3 && inReview.every((x) => x.hasImage && x.image.px.w === 2250), '3 generated images are waiting in Review at 2250 × 3000');
+  const want = { w: Math.ceil(s.specs.interior.artBox.w * 300), h: Math.ceil(s.specs.interior.artBox.h * 300) };
+  ok(inReview.length === 3 && inReview.every((x) => x.hasImage && x.image.px.w === want.w && x.image.px.h === want.h), `3 generated images are waiting in Review at the book's art-box size (${want.w} × ${want.h})`);
   ok(s.usage.today === 3, `usage counter shows 3 today (${s.usage.today})`);
   const extra = await api('/api/illustrations/10/generate', { method: 'POST' });
   ok(extra.status === 409 && /Daily limit/.test(extra.json.error), 'a 4th generation is refused by the daily cap');

@@ -64,12 +64,13 @@ async function validateInterior(bytes, manifest, state) {
   const final = manifest.mode === 'final';
 
   r.check(n === spec.pageCount, 'page-count-match', 'PDF page count matches the layout plan', `${n} pages in PDF, ${spec.pageCount} planned`);
-  r.check(n >= KDP.minPages && n <= KDP.maxPages, 'page-count-range', `Page count within KDP range (${KDP.minPages}–${KDP.maxPages})`, `${n} pages`);
+  const minP = spec.minPages ?? KDP.minPages, maxP = spec.maxPages ?? KDP.maxPages;
+  r.check(n >= minP && n <= maxP, 'page-count-range', `Page count within KDP range for this trim and paper (${minP}–${maxP})`, `${n} pages`);
   r.check(n % 2 === 0, 'page-count-even', 'Page count is even', `${n} pages`);
 
-  const wPt = KDP.trim.w * PT, hPt = KDP.trim.h * PT;
+  const wPt = spec.pageSize.w * PT, hPt = spec.pageSize.h * PT;
   const badSize = pages.map((p, i) => ({ i: i + 1, ...p.getSize() })).filter((s) => Math.abs(s.width - wPt) > EPS_PT || Math.abs(s.height - hPt) > EPS_PT);
-  r.check(!badSize.length, 'page-size', 'Every page is 8.5" x 11" (612 x 792 pt), no bleed', badSize.length ? `Wrong size on pages ${badSize.map((s) => s.i).join(', ')}` : `${n} of ${n} pages correct`);
+  r.check(!badSize.length, 'page-size', `Every page is ${spec.pageSize.w}" x ${spec.pageSize.h}" (${wPt} x ${hPt} pt), no bleed`, badSize.length ? `Wrong size on pages ${badSize.map((s) => s.i).join(', ')}` : `${n} of ${n} pages correct`);
   const boxes = pages.map((p) => [p.getMediaBox(), p.getTrimBox()]).filter(([m, t]) => Math.abs(m.width - t.width) > EPS_PT || Math.abs(m.height - t.height) > EPS_PT);
   r.check(!boxes.length, 'trim-box', 'TrimBox equals MediaBox on every page', boxes.length ? `${boxes.length} pages differ` : '');
 
@@ -114,10 +115,10 @@ async function validateInterior(bytes, manifest, state) {
   // Artwork content: every placed image must be real line art (enough ink, not a near-empty frame, no gray).
   if (placed.length) {
     const sharp = require('sharp');
-    const store = require('./store');
+    const B = require('./store').of(state);
     const bad = [];
     for (const p of placed) {
-      const { data } = await sharp(store.imagePath(p.image.file)).resize(450, 600, { fit: 'fill', kernel: 'nearest' }).grayscale().raw().toBuffer({ resolveWithObject: true });
+      const { data } = await sharp(B.imagePath(p.image.file)).resize(450, 600, { fit: 'fill', kernel: 'nearest' }).grayscale().raw().toBuffer({ resolveWithObject: true });
       let ink = 0, gray = 0;
       for (const v of data) { if (v < 128) ink++; if (v > 40 && v < 215) gray++; }
       const ratio = ink / data.length;
@@ -153,9 +154,9 @@ async function validateCover(bytes, manifest, state) {
     `${(width / PT).toFixed(4)}" x ${(height / PT).toFixed(4)}" in PDF; expected ${c.width.toFixed(4)}" x ${c.height.toFixed(4)}"`);
   const expectedSpine = c.pageCount * KDP.spinePerPage[c.paper];
   r.check(Math.abs(c.spine - expectedSpine) < 1e-9, 'spine-formula', `Spine width uses KDP's ${c.paper}-paper formula`, `${c.pageCount} pages × ${KDP.spinePerPage[c.paper]}" = ${expectedSpine.toFixed(4)}"`);
-  const expectedW = 2 * KDP.bleed + 2 * KDP.trim.w + expectedSpine;
-  r.check(Math.abs(c.width - expectedW) < 1e-9 && Math.abs(c.height - (KDP.trim.h + 2 * KDP.bleed)) < 1e-9, 'cover-formula', 'Width = bleed + back + spine + front + bleed; height = trim + 2 × bleed',
-    `${KDP.bleed} + ${KDP.trim.w} + ${expectedSpine.toFixed(4)} + ${KDP.trim.w} + ${KDP.bleed} = ${expectedW.toFixed(4)}"`);
+  const expectedW = 2 * KDP.bleed + 2 * c.trim.w + expectedSpine;
+  r.check(Math.abs(c.width - expectedW) < 1e-9 && Math.abs(c.height - (c.trim.h + 2 * KDP.bleed)) < 1e-9, 'cover-formula', 'Width = bleed + back + spine + front + bleed; height = trim + 2 × bleed',
+    `${KDP.bleed} + ${c.trim.w} + ${expectedSpine.toFixed(4)} + ${c.trim.w} + ${KDP.bleed} = ${expectedW.toFixed(4)}"`);
   r.check(manifest.spineText === c.spineTextAllowed || (!manifest.spineText && !c.spineTextAllowed), 'spine-text', `Spine text only when the book has ${c.spineTextMinPages}+ pages`,
     c.spineTextAllowed ? (manifest.spineText ? 'Spine text placed' : 'Spine text allowed but not placed') : `${c.pageCount} pages: no spine text placed`);
   if (manifest.spineText && !c.spineTextAllowed) r.fail('spine-text-forbidden', 'Spine text present on a book that is too thin', '');
@@ -187,7 +188,7 @@ async function validateCover(bytes, manifest, state) {
   } else {
     r.warn('template-only', 'Template file contains guide lines and is not for upload', 'Use the print-ready export for KDP.');
   }
-  r.warn('official-calculator', 'Cross-check with the official KDP cover calculator before upload', `Enter 8.5 x 11, white paper, ${c.pageCount} pages at ${c.calculatorUrl}. Expected ${c.width.toFixed(3)}" x ${c.height.toFixed(3)}", spine ${c.spine.toFixed(3)}".`);
+  r.warn('official-calculator', 'Cross-check with the official KDP cover calculator before upload', `Enter ${c.trim.w} x ${c.trim.h}, black ink, ${c.paper} paper, ${c.pageCount} pages at ${c.calculatorUrl}. Expected ${c.width.toFixed(3)}" x ${c.height.toFixed(3)}", spine ${c.spine.toFixed(3)}".`);
   return r.done();
 }
 

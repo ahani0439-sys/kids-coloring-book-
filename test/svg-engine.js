@@ -76,7 +76,7 @@ async function appFlow() {
     s = await waitIdle();
     const il1 = s.illustrations[0];
     ok(il1.status === 'review' && il1.hasImage && il1.image.engine && il1.image.seed !== undefined, `page 1 drawn and waiting for review (seed ${il1.image.seed})`);
-    ok(fs.existsSync(path.join(data, 'images', il1.image.svgFile)), 'the SVG source is saved next to the PNG');
+    ok(fs.existsSync(path.join(data, 'books', s.bookId, 'images', il1.image.svgFile)), 'the SVG source is saved next to the PNG');
     const g3 = await api('/api/illustrations/3/generate', 'POST');
     ok(g3.status === 409 && /not been designed/.test(g3.json.error), 'page 3 (no drawing yet) is refused with a clear message');
     ok((await api('/api/illustrations/1/approve', 'POST')).json.illustrations[0].status === 'approved', 'Approve page 1');
@@ -101,7 +101,7 @@ async function appFlow() {
     ok(confirmed.status === 200, 'with explicit confirmation, an approved page can be replaced');
     s = await waitIdle();
     ok(s.illustrations[0].status === 'review' && s.illustrations[0].image.file !== firstFile, 'the replacement is a new draft waiting for review');
-    ok(fs.existsSync(path.join(data, 'rejected', firstFile)), 'the previously approved file is kept in rejected/, not deleted');
+    ok(fs.existsSync(path.join(data, 'books', s.bookId, 'rejected', firstFile)), 'the previously approved file is kept in rejected/, not deleted');
   } finally {
     p.kill('SIGTERM');
     await new Promise((r) => p.on('exit', r));

@@ -1,6 +1,33 @@
-# Dino Book Factory
+# KDP Coloring Book Factory
 
 A mobile-first web app that builds an Amazon KDP paperback coloring book, *Dino Buddies Coloring Book*, from your phone. It produces two files: an 8.5" × 11" black-and-white interior PDF and a full-wrap cover PDF. Both are checked against KDP's rules before they are saved. Nothing is ever uploaded to Amazon, and nothing is deployed or purchased automatically.
+
+## Multi-book library
+
+The app manages any number of independent coloring books. Each one has its own title, theme, illustration count, uploads, approvals, cover art, metadata and PDFs.
+
+- **Books tab:** create, open, rename, duplicate (copies artwork and approvals, not PDFs) and archive. Archiving hides a book; nothing is ever deleted.
+- **New book:** pick 20, 30, 50, 75, 100 or 150 illustrations, or type any number. Then choose the trim size (8.5 × 11, 8 × 10 or 8.5 × 8.5) and the paper (white or cream). The form shows the printed page count, spine and cover size live, and refuses counts above KDP's page limit.
+- **Illustrations vs printed pages:** each illustration takes 2 printed pages, the picture on a right-hand page plus a blank back. Front matter adds 2 pages (title and copyright), or 4 with the "This Book Belongs To" page. So 30 illustrations make 64 pages, and 100 illustrations make 204.
+- **Calculated per book from its real page count:** the inside margin, raised automatically to KDP's minimum (0.375" up to 150 pages, 0.5" up to 300, 0.625" up to 500, 0.75" up to 700, 0.875" above that); the spine (pages × 0.002252" on white, × 0.0025" on cream); the cover size; and whether spine text is allowed (80+ pages).
+- **KDP page limits for black ink** (from KDP's submission guidelines): 8.5 × 11 and 8.5 × 8.5 allow 24–590 pages on white or 24–550 on cream, which is at most 293 illustrations on 8.5 × 11 white. 8 × 10 allows 24–828 on white or 24–776 on cream.
+- **Changing the count later:** adding illustrations is always safe. Removing them only drops empty pages at the end; pages with artwork or history are never removed.
+- **Migration:** the original single-book data was copied into the library as "Dino Buddies Coloring Book" on first start. The original files stay untouched in `DATA_DIR` as a backup, and the migration is recorded in `library.json`.
+
+### Large books on Render Free (measured)
+
+Measured on a full CPU, with estimates for Render Free's 0.1 CPU:
+
+| Illustrations | Printed pages | Final interior PDF | CPU time (estimate on 0.1 CPU) | Peak memory |
+|---|---|---|---|---|
+| 30 | 64 | ~1.5 MB | ~10 s (~1.5 min) | ~260 MB |
+| 100 | 204 | ~5.5 MB | ~30 s (~5 min) | ~270 MB |
+| 150 | 304 | ~8 MB | ~45 s (~7.5 min) | ~275 MB |
+
+- **Background builds:** PDFs build in the background, one at a time, and the app shows progress, so a long build never ties up a page or a tap.
+- **Uploads** take about 7 seconds each on the free plan, so a 150-illustration book means a long upload session.
+- **Storage:** a 150-illustration book uses roughly 20–40 MB in the bucket, far under the 10 GB free tier.
+- **Wake-ups:** each one downloads only the small JSON files. Images and PDFs are fetched when first needed.
 
 ## Status
 

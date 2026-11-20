@@ -45,7 +45,7 @@ main { display: grid; gap: 18px; padding-block: 18px; }
 .section-head { display: flex; justify-content: space-between; align-items: baseline; gap: 12px; flex-wrap: wrap; }
 .eyebrow { font-size: .72rem; font-weight: 800; letter-spacing: .08em; text-transform: uppercase; color: var(--muted); }
 
-.tabs { position: fixed; left: 0; right: 0; bottom: 0; z-index: 6; display: grid; grid-template-columns: repeat(4, 1fr);
+.tabs { position: fixed; left: 0; right: 0; bottom: 0; z-index: 6; display: grid; grid-template-columns: repeat(5, 1fr);
   background: var(--surface); border-top: 1px solid var(--line);
   padding: 4px max(8px, env(safe-area-inset-right, 0px)) env(safe-area-inset-bottom, 0px) max(8px, env(safe-area-inset-left, 0px)); }
 .tab { appearance: none; border: 0; background: none; color: var(--muted); font: 700 .75rem var(--body); display: grid; justify-items: center; gap: 2px; padding: 8px 0; min-height: 56px; cursor: pointer; }
@@ -146,3 +146,11 @@ input[type="color"] { width: 56px; height: 44px; border: 1.5px solid var(--line)
 .lightbox-bar .btn-row { flex: 1 1 260px; justify-content: flex-end; }
 .lightbox-img { overflow: auto; background: #FFFFFF; border: 1px solid var(--line); border-radius: 10px; display: grid; place-items: center; min-height: 0; }
 .lightbox-img img { max-width: 100%; max-height: 100%; object-fit: contain; }
+
+/* Books dashboard */
+.brand-text { display: grid; line-height: 1.1; min-width: 0; }
+.brand-text small { font: 700 .72rem var(--body); opacity: .85; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 52vw; }
+.tab[disabled] { opacity: .35; }
+.bookcard h3 { min-width: 0; overflow-wrap: anywhere; }
+.calc { background: var(--sunk); border: 0; gap: 6px; }
+select { width: 100%; font: 400 16px/1.4 var(--body); color: var(--ink); background: var(--bg); border: 1.5px solid var(--line); border-radius: 10px; padding: 11px 12px; min-height: 46px; }
