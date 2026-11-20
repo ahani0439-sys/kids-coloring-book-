@@ -73,7 +73,7 @@ async function buildCover(state, { mode = 'template' } = {}) {
       page.drawRectangle({ x: (r.x - panelPad) * PT, y: (r.y - panelPad) * PT, width: (w + 2 * panelPad) * PT, height: (h + 2 * panelPad) * PT, color: WHITE, borderColor: accent, borderWidth: 3 });
     }
     draw(page, { x: r.x * PT, y: r.y * PT, width: w * PT, height: h * PT });
-    manifest.images.push({ label: 'front art', source: artSource, pxW: meta.width, pxH: meta.height, dpi: Math.floor(meta.width / w), ...r });
+    manifest.images.push({ label: 'front art', source: artSource, pxW: meta.width, pxH: meta.height, dpi: Math.floor(meta.width / w), sourcePx: artSource === 'uploaded cover art' ? state.coverArt.sourcePx || null : null, ...r });
     manifest.boxes.push({ kind: 'image', label: 'front art', ...r });
   } else {
     page.drawRectangle({ x: art.x * PT, y: art.y * PT, width: art.w * PT, height: art.h * PT, color: WHITE, borderColor: accent, borderWidth: 2, borderDashArray: [10, 6] });

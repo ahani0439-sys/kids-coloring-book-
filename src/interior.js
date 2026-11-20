@@ -62,12 +62,17 @@ async function buildInterior(state, { mode = 'proof', guides = false } = {}) {
     } else if (p.role === 'illustration') {
       const il = state.illustrations.find((i) => i.id === p.illustration);
       const file = B.approvedImageFile(il);
+      // Story books: a caption band at the bottom of the safe area; the picture uses the space above it.
+      const caption = book.type === 'story' && il.caption ? il.caption : '';
+      const capH = caption ? 1.3 : 0;
+      const artArea = { x: safe.x, y: safe.y + capH, w: safe.w, h: safe.h - capH };
+      if (caption) drawTextBlock(page, caption, { font: f.display, size: 20, x0: x0 + 0.1 * PT, x1: x1 - 0.1 * PT, topY: bottom + (capH - 0.15) * PT, lineGap: 1.2, boxes: entry.boxes, label: 'caption' });
       if (file) {
         const art = await embedLineArt(doc, file);
         const meta = { width: art.width, height: art.height };
-        const scale = Math.min(safe.w / meta.width, safe.h / meta.height); // inches per pixel
+        const scale = Math.min(artArea.w / meta.width, artArea.h / meta.height); // inches per pixel
         const wIn = meta.width * scale, hIn = meta.height * scale;
-        const rect = { x: safe.x + (safe.w - wIn) / 2, y: safe.y + (safe.h - hIn) / 2, w: wIn, h: hIn };
+        const rect = { x: artArea.x + (artArea.w - wIn) / 2, y: artArea.y + (artArea.h - hIn) / 2, w: wIn, h: hIn };
         drawXObject(page, art.ref, rect.x * PT, rect.y * PT, rect.w * PT, rect.h * PT);
         entry.image = { illustration: il.id, file: il.image.file, status: il.status, pxW: meta.width, pxH: meta.height, dpi: Math.floor(meta.width / wIn), ...rect, sourcePx: il.image.sourcePx || null };
         entry.boxes.push({ kind: 'image', label: `illustration ${il.id}`, ...rect });

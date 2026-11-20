@@ -22,6 +22,8 @@ function providerStatus() {
 }
 // Whether the current engine can draw this page (the built-in engine needs a designed composition).
 function canGenerate(bs, il) {
+  // Books generated with an AI picture provider (OpenAI API or a local server) can redraw any page.
+  if (['openai', 'local'].includes(bs.load().genJob?.spec?.imageProvider)) return true;
   // The built-in drawings exist only for the Dino book's page designs (8.5 x 11).
   if (isSvg()) { const b = bs.load().book; return b.drawingSet === 'dino' && (b.trim || '8.5x11') === '8.5x11' && engine.hasComposition(il.id); }
   return providerStatus().configured;
@@ -115,11 +117,16 @@ function archive(bs, il, reason) {
   il.image = null;
 }
 
+// Cover art keeps its colors and is sized to fill the front panel at 300 DPI (up to 8.5 x 11 in =
+// 2550 x 3300 px). Smaller sources (ChatGPT, OpenAI API, local models: ~1024 x 1536) are enlarged;
+// the original size is returned so the cover check can warn about soft artwork.
 async function prepareCoverArt(input) {
-  // Front panel at 300 DPI is 2550 x 3300; keep color, cap the size.
-  return sharp(input).rotate().flatten({ background: '#ffffff' })
-    .resize(2550, 3300, { fit: 'inside', withoutEnlargement: true })
+  const meta = await sharp(input).metadata();
+  if (!meta.width) throw new Error('This file could not be read. Use PNG or JPEG.');
+  const buffer = await sharp(input).rotate().flatten({ background: '#ffffff' })
+    .resize(2550, 3300, { fit: 'inside', kernel: 'lanczos3' })
     .jpeg({ quality: 92 }).withMetadata({ density: 300 }).toBuffer();
+  return Object.assign(buffer, { sourcePx: { w: meta.width, h: meta.height } });
 }
 
 // ---------- Generation queue with a daily spending cap ----------

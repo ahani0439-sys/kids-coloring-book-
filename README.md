@@ -2,6 +2,35 @@
 
 A mobile-first web app that builds an Amazon KDP paperback coloring book, *Dino Buddies Coloring Book*, from your phone. It produces two files: an 8.5" × 11" black-and-white interior PDF and a full-wrap cover PDF. Both are checked against KDP's rules before they are saved. Nothing is ever uploaded to Amazon, and nothing is deployed or purchased automatically.
 
+## Generate Full Book (automatic generation from the app)
+
+Enter a book idea, pick the book type (coloring, or story coloring with one sentence per page), the trim size and the illustration count, then tap **Generate Full Book** on the book's Overview. Each run:
+
+1. **Plans the book:** title, subtitle, back-cover description, 7 keywords, a character bible, a style guide, and one scene (plus a caption for story books) per page.
+2. **Draws the pictures,** then converts them to print-ready black-and-white line art.
+3. **Makes the cover artwork.**
+4. **Builds the KDP interior and cover PDFs** once every page is approved. You can review page by page, or use **Approve all** (two taps).
+
+Progress, **Stop** (cancels the in-flight request at once), **Resume** (also after a server restart), **Retry failed** and single-page **Regenerate** are all there. The character bible and style guide go into every picture prompt, to keep characters and style consistent.
+
+| Provider | What it does | Cost | Needs |
+|---|---|---|---|
+| **Manual** (default) | Template planner and your own uploads | Free, always works | Nothing |
+| **ChatGPT subscription** | Make pictures in the ChatGPT app, then upload them | Your existing plan | A ChatGPT plan. It does **not** give this app API access |
+| **Built-in drawings** | Draws the Dino book's designed pages | Free | Nothing |
+| **OpenAI API** (optional) | Plans with a text model; draws pictures and covers with gpt-image-2 | Billed separately by OpenAI per request (~$0.005 / $0.041 / $0.165 per portrait image at low / medium / high quality) | An API key from platform.openai.com with API billing |
+| **Local models** (optional) | Ollama for text, a Stable Diffusion web UI (A1111/Forge API) for pictures | Free to run | Your own computer, ideally with an NVIDIA GPU (8 GB+). Not possible on Render Free or an iPhone |
+
+**Paid safety.** Paid generation is off by default. It runs only after all of these:
+1. you add an API key (Render environment `OPENAI_API_KEY`, or the AI settings screen, which stores it encrypted on the server);
+2. you switch on "Allow paid OpenAI API usage";
+3. you set a monthly limit above $0;
+4. you approve the cost estimate and a budget for that specific book.
+
+Every paid request is checked against the book's budget and the monthly limit before it's sent. A ChatGPT Plus or Pro subscription does not include API usage.
+
+**Not tested against the real services:** the OpenAI, Ollama and Stable Diffusion integrations were tested only against mock servers that copy their APIs (`test/ai-generation.js`). The first real run is the real test. Saved keys are encrypted with `APP_PASSWORD` (or `SETTINGS_SECRET`), so changing the password means saving the key again.
+
 ## Multi-book library
 
 The app manages any number of independent coloring books. Each one has its own title, theme, illustration count, uploads, approvals, cover art, metadata and PDFs.

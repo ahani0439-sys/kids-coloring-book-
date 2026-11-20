@@ -44,6 +44,7 @@ class BookStore {
     st.book = { ...DEFAULT_BOOK, ...st.book, margins: { ...DEFAULT_BOOK.margins, ...(st.book.margins || {}) }, cover: { ...DEFAULT_BOOK.cover, ...(st.book.cover || {}) } };
     st.usage ||= { day: null, generations: 0, total: 0 };
     st.decisions ||= [];
+    if (st.genJob?.status === 'running') { st.genJob.status = 'interrupted'; st.genJob.message = 'The server restarted while generating. Tap Resume to continue where it stopped.'; }
     if (st.exportJob?.status === 'running') st.exportJob = { ...st.exportJob, status: 'failed', error: 'Interrupted by a server restart. Build it again.' };
     if (st.autoExport?.status === 'running') st.autoExport = { at: st.autoExport.at, status: 'failed', error: 'Interrupted by a server restart. Build the final files from the Export tab.' };
     for (const il of st.illustrations) {
@@ -157,7 +158,7 @@ const library = {
   rename(id, title) {
     const bs = this.get(id); if (!bs) throw new Error('Book not found');
     const t = String(title || '').trim().slice(0, 200); if (!t) throw new Error('Title cannot be empty.');
-    bs.load().book.title = t; bs.save();
+    bs.load().book.title = t; bs.load().book.titleFromUser = true; bs.save();
     return bs;
   },
   setArchived(id, archived) {

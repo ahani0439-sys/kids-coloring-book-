@@ -7,7 +7,7 @@ const kb = (b) => (b > 1048576 ? (b / 1048576).toFixed(1) + ' MB' : Math.round(b
 const STATUS = { empty: 'Needs art', generating: 'Generating', review: 'Review', approved: 'Approved', rejected: 'Rejected', failed: 'Failed' };
 
 let S = null;
-const TABS = ['books', 'overview', 'pages', 'book', 'export'];
+const TABS = ['books', 'overview', 'pages', 'book', 'export', 'ai'];
 let tab = TABS.includes(location.hash.slice(1)) ? location.hash.slice(1) : 'overview';
 let LIB = null;            // library: list of books
 let bookId = null;         // the open book
@@ -15,7 +15,11 @@ let BP = '/api';           // API prefix for the open book
 let showArchived = false;
 let renaming = null;
 let confirmArchive = null;
-let newBook = { open: false, title: '', theme: '', count: 30, custom: '', trim: '8.5x11', paper: 'white', intro: true };
+let newBook = { open: false, title: '', theme: '', idea: '', type: 'coloring', count: 30, custom: '', trim: '8.5x11', paper: 'white', intro: true };
+let AI = null;             // AI settings (masked; never contains keys)
+let gen = { textProvider: 'manual', imageProvider: 'manual', coverProvider: 'manual', autoApprove: false, budget: '', approve: false, estimate: null, forBook: null };
+let localCheck = null;
+let confirmApproveAll = false;
 let preview = null;
 let previewTimer = null;
 let filter = 'all';
@@ -43,7 +47,7 @@ function closePreview() { const el = $('#preview'); if (el) el.hidden = true; }
 
 async function api(path, opts = {}) {
   // Book-specific endpoints are sent to the open book.
-  if (path.startsWith('/api/') && !/^\/api\/(books|kdp)(\/|\?|$)/.test(path)) path = BP + path.slice(4);
+  if (path.startsWith('/api/') && !/^\/api\/(books|kdp|ai)(\/|\?|$)/.test(path)) path = BP + path.slice(4);
   const res = await fetch(path, { headers: opts.body && !(opts.body instanceof FormData) ? { 'Content-Type': 'application/json' } : {}, ...opts, body: opts.body && !(opts.body instanceof FormData) ? JSON.stringify(opts.body) : opts.body });
   const json = await res.json().catch(() => ({}));
   if (!res.ok) throw new Error(json.error || `Request failed (${res.status})`);
@@ -76,12 +80,13 @@ function schedulePoll() {
   clearTimeout(pollTimer);
   if (!S) return;
   if (S.illustrations.some((i) => i.status === 'generating')) pollTimer = setTimeout(load, 2000);
+  else if (S.genJob?.running) pollTimer = setTimeout(load, 2000);
   else if (S.storage.pending || S.autoExport?.status === 'running' || S.exportJob?.status === 'running') pollTimer = setTimeout(load, 2500);
 }
 
 // ---------- Rendering ----------
 function render() {
-  if (!S && tab !== 'books') tab = 'books';
+  if (!S && !['books', 'ai'].includes(tab)) tab = 'books';
   document.querySelectorAll('.tab').forEach((b) => { b.setAttribute('aria-current', b.dataset.tab === tab ? 'page' : 'false'); if (b.dataset.tab !== 'books') b.disabled = !S; });
   const tag = $('.kdp-tag');
   if (tag) tag.textContent = S ? `${S.specs.interior.trim.label.split(' (')[0]} · ${S.illustrations.length} pictures` : 'KDP coloring books';
@@ -89,7 +94,7 @@ function render() {
   if (cur) cur.textContent = S ? S.book.title : '';
   renderBanner();
   const v = $('#view');
-  v.innerHTML = { books: viewBooks, overview: viewOverview, pages: viewPages, book: viewBook, export: viewExport }[tab]();
+  v.innerHTML = { books: viewBooks, overview: viewOverview, pages: viewPages, book: viewBook, export: viewExport, ai: viewAI }[tab]();
 }
 
 // ---------- Books dashboard ----------
@@ -105,7 +110,11 @@ function viewBooks() {
   const form = newBook.open ? `<section class="card" id="newBookCard">
       <div class="section-head"><h2>New book</h2><button class="btn ghost" data-newbook="close">Cancel</button></div>
       <label class="field">Title<input type="text" id="nb-title" value="${esc(newBook.title)}" placeholder="Ocean Friends Coloring Book"></label>
-      <label class="field">Theme<span class="hint">Used for the subtitle, description and keywords. You can change them later.</span><input type="text" id="nb-theme" value="${esc(newBook.theme)}" placeholder="Cute ocean animals"></label>
+      <label class="field">Book idea<span class="hint">One or two sentences. Used to plan every page (Generate Full Book).</span><textarea id="nb-idea" rows="3" placeholder="A brave little turtle explores the ocean and makes new friends">${esc(newBook.idea)}</textarea></label>
+      <div class="grid2">
+        <label class="field">Book type<select id="nb-type">${Object.entries(LIB?.bookTypes || {}).map(([k, l]) => `<option value="${k}" ${newBook.type === k ? 'selected' : ''}>${esc(l)}</option>`).join('')}</select></label>
+        <label class="field">Theme (short)<span class="hint">For keywords</span><input type="text" id="nb-theme" value="${esc(newBook.theme)}" placeholder="ocean animals"></label>
+      </div>
       <label class="field">Author / pen name<span class="hint">Needed for the final PDFs</span><input type="text" id="nb-author" value="${esc(newBook.author || '')}"></label>
       <div class="field"><span>Number of coloring illustrations</span>
         <div class="chips" role="group" aria-label="Illustration count">${COUNT_CHOICES.map((c) => `<button class="chip" data-count="${c}" aria-pressed="${newBook.custom === '' && newBook.count === c}">${c}</button>`).join('')}</div>
@@ -143,7 +152,7 @@ function viewBooks() {
     </article>`;
   };
   return `
-  <div class="section-head"><h1>Your books</h1>${newBook.open ? '' : '<button class="btn primary" data-newbook="open">New book</button>'}</div>
+  <div class="section-head"><h1>Your books</h1><div class="btn-row" style="flex:0 0 auto"><button class="btn ghost" data-go="ai">AI settings</button>${newBook.open ? '' : '<button class="btn primary" data-newbook="open">New book</button>'}</div></div>
   ${LIB?.migratedFrom ? `<p class="small muted">Your original book was moved into this library on ${new Date(LIB.migratedFrom.at).toLocaleDateString()}. Its original files are kept as a backup.</p>` : ''}
   ${form}
   ${active.length ? active.map(card).join('') : '<p class="muted">No books yet. Tap “New book” to start one.</p>'}
@@ -204,6 +213,141 @@ function autoExportLine() {
   return `<p class="small">Final files ${a.interior?.ok && a.cover?.ok ? 'built' : 'checked'} ${new Date(a.at).toLocaleString()}: interior ${a.interior?.ok ? 'passed' : 'blocked'}, cover ${a.cover?.ok ? 'passed' : 'blocked'}. See Export.</p>${probs.length ? `<div class="banner warn"><strong>Fix these, then build from the Export tab</strong>${[...new Set(probs)].map((p) => `<span>${esc(p)}</span>`).join('')}</div>` : ''}`;
 }
 
+// ---------- Generate Full Book ----------
+const PROV_LABEL = {
+  text: { manual: 'Manual planner (free)', openai: 'OpenAI API (paid, billed by OpenAI)', local: 'Local model on your computer (free)' },
+  image: { manual: 'I upload the pictures (free, e.g. made in ChatGPT)', builtin: 'Built-in drawings (free, Dino book only)', openai: 'OpenAI API (paid, billed by OpenAI)', local: 'Local Stable Diffusion on your computer (free)' },
+  cover: { manual: 'Use my upload or first approved picture (free)', openai: 'OpenAI API (paid, billed by OpenAI)', local: 'Local Stable Diffusion (free)' },
+};
+const money = (v) => `$${Number(v || 0).toFixed(2)}`;
+async function refreshEstimate() {
+  if (!S) return;
+  const out = await api('/api/generate/estimate', { method: 'POST', body: { textProvider: gen.textProvider, imageProvider: gen.imageProvider, coverProvider: gen.coverProvider } }).catch(() => null);
+  gen.estimate = out;
+  if (out?.estimate?.paid && gen.budget === '') gen.budget = String(Math.max(out.estimate.totalUsd, 0.01).toFixed(2));
+  if (tab === 'overview') render();
+}
+function generatePanel() {
+  if (gen.forBook !== bookId) {
+    const sp = S.genJob?.spec || S.ai?.spec || {};
+    gen = { textProvider: sp.textProvider || 'manual', imageProvider: sp.imageProvider || (S.book.drawingSet === 'dino' ? 'builtin' : 'manual'), coverProvider: sp.coverProvider || 'manual', autoApprove: false, budget: '', approve: false, estimate: null, forBook: bookId };
+    refreshEstimate();
+  }
+  const j = S.genJob;
+  const opts = (kind, cur) => Object.entries(PROV_LABEL[kind]).filter(([k]) => kind !== 'image' || k !== 'builtin' || S.book.drawingSet === 'dino').map(([k, l]) => `<option value="${k}" ${cur === k ? 'selected' : ''}>${esc(l)}</option>`).join('');
+  const c = counts();
+  if (j?.running) {
+    const pr = j.progress || {};
+    return `<section class="card gen">
+      <div class="section-head"><h2>Generating your book…</h2><div class="spinner"></div></div>
+      <p class="small">Step: <b>${esc({ plan: 'Planning the book', pictures: 'Drawing pictures', cover: 'Cover artwork', assemble: 'Building PDFs' }[j.phase] || j.phase)}</b> · pictures ${pr.done || 0} of ${pr.total || S.illustrations.length}${pr.failed ? ` · ${pr.failed} failed` : ''}</p>
+      <div class="progress"><span style="width:${((pr.done || 0) / (pr.total || 1)) * 100}%;background:var(--ok)"></span></div>
+      ${j.approvedBudgetUsd ? `<p class="small num">OpenAI API spend: ${money(j.spentUsd)} of your approved ${money(j.approvedBudgetUsd)}</p>` : '<p class="small muted">No paid requests in this run.</p>'}
+      <button class="btn bad block" data-gen-stop="1">Stop generation now</button>
+      ${logHtml(j)}
+    </section>`;
+  }
+  const e = gen.estimate?.estimate;
+  const paid = e?.paid;
+  const blocker = paid ? gen.estimate.paidBlocker : null;
+  const budget = Number(gen.budget);
+  const canStart = e && (!paid || (!blocker && gen.approve && budget > 0));
+  const status = j ? `<div class="banner ${['failed', 'paused', 'interrupted', 'needs-attention'].includes(j.status) ? 'warn' : ''}"><strong>${esc({ done: 'Book finished', 'needs-review': 'Pictures ready for your review', paused: 'Paused', stopped: 'Stopped', interrupted: 'Interrupted', failed: 'Stopped with an error', 'needs-attention': 'PDFs need attention' }[j.status] || j.status)}</strong><span>${esc(j.message || j.error || '')}</span>
+      ${j.approvedBudgetUsd ? `<span class="num">OpenAI API spend for this book: ${money(j.spentUsd)} of approved ${money(j.approvedBudgetUsd)}</span>` : ''}</div>` : '';
+  const resumeBtns = j && ['paused', 'stopped', 'interrupted', 'failed'].includes(j.status) ? `<div class="btn-row"><button class="btn primary" data-gen-resume="1" ${paid && j.status === 'paused' && !(gen.approve && budget > 0) ? 'disabled' : ''}>Resume</button>${c.failed ? `<button class="btn" data-gen-retry="1">Retry ${c.failed} failed</button>` : ''}</div>` : (j && c.failed ? `<button class="btn" data-gen-retry="1">Retry ${c.failed} failed page(s)</button>` : '');
+  const approveAll = c.review ? `<button class="btn ok block" data-approve-all="1">${confirmApproveAll ? `Tap again to approve all ${c.review}` : `Approve all ${c.review} page(s) in review`}</button>` : '';
+  return `<section class="card gen">
+    <div class="section-head"><h2>Generate Full Book</h2><button class="btn ghost" data-go="ai">AI settings</button></div>
+    ${status}${resumeBtns}${approveAll}
+    <p class="small muted">Plans every page from your book idea, draws the pictures, makes the cover, and builds the KDP PDFs once every page is approved.</p>
+    <label class="field">Plan and text<select id="gen-text">${opts('text', gen.textProvider)}</select></label>
+    <label class="field">Pictures<select id="gen-image">${opts('image', gen.imageProvider)}</select></label>
+    <label class="field">Cover artwork<select id="gen-cover">${opts('cover', gen.coverProvider)}</select></label>
+    <label class="toggle"><input type="checkbox" id="gen-auto" ${gen.autoApprove ? 'checked' : ''}> Approve generated pictures automatically (off: you review every page)</label>
+    ${e ? `<div class="card calc">
+      <p><strong>Cost estimate: ${paid ? money(e.totalUsd) : '$0.00 (free)'}</strong></p>
+      ${e.lines.map((l) => `<p class="small num">${esc(l.item)}: ${money(l.usd)}</p>`).join('')}
+      ${paid ? `<p class="small muted">${esc(e.note)} Billed by OpenAI to your API account. A ChatGPT Plus or Pro subscription does not cover API usage.</p>` : ''}
+    </div>` : '<p class="small muted">Calculating the estimate…</p>'}
+    ${blocker ? `<div class="banner warn"><strong>Paid generation is not available</strong><span>${esc(blocker)}</span><span>Change this in AI settings, or choose free options above.</span></div>` : ''}
+    ${paid && !blocker ? `<label class="field">Budget for this book (USD)<span class="hint">Generation pauses before it would spend more. Left this month: ${money(gen.estimate.monthlyRoom)}</span><input type="number" id="gen-budget" min="0.01" step="0.01" value="${esc(gen.budget)}"></label>
+      <label class="toggle"><input type="checkbox" id="gen-approve" ${gen.approve ? 'checked' : ''}> I approve up to ${money(budget || 0)} of OpenAI API charges for this book</label>` : ''}
+    <button class="btn primary block" data-gen-start="1" ${canStart ? '' : 'disabled'}>${j ? 'Generate again (keeps approved pages)' : 'Generate Full Book'}</button>
+    ${j ? logHtml(j) : ''}
+  </section>`;
+}
+function logHtml(j) {
+  return j.log?.length ? `<details><summary>Activity (${j.log.length})</summary><ul class="checks">${j.log.slice().reverse().map((l) => `<li><span class="small muted num">${new Date(l.at).toLocaleTimeString()}</span><div class="small">${esc(l.msg)}</div></li>`).join('')}</ul></details>` : '';
+}
+
+// ---------- AI settings (admin) ----------
+function viewAI() {
+  if (!AI) return '<p class="muted">Loading AI settings…</p>';
+  const o = AI.openai, l = AI.local, lim = AI.limits, sp = AI.spending;
+  const lc = localCheck || l.lastCheck;
+  return `
+  <div class="section-head"><h1>AI settings</h1><button class="btn ghost" data-go="books">Back to books</button></div>
+  <section class="card">
+    <h2>How pictures and text can be made</h2>
+    <p class="small"><b>Manual (free, always works).</b> Plan with templates and upload your own pictures. <b>ChatGPT subscription:</b> you can make pictures in the ChatGPT app and upload them here. That is the only way your ChatGPT Plus or Pro plan helps: <b>it does not include OpenAI API access, and it does not let this app generate images for free</b>.</p>
+    <p class="small"><b>OpenAI API (optional, paid).</b> A separate pay-as-you-go account at platform.openai.com, billed per request by OpenAI. Off until you add a key, switch on paid use, set a monthly limit and approve each book's budget.</p>
+    <p class="small"><b>Local models (optional, free to run).</b> Need your own computer running Ollama (text) and a Stable Diffusion web UI (pictures, an NVIDIA GPU with 8 GB+ recommended). They cannot run on Render Free or on an iPhone.</p>
+  </section>
+
+  <section class="card">
+    <div class="section-head"><h2>OpenAI API</h2><span class="pill ${o.paidBlocker ? 'st-empty' : 'st-approved'}">${o.paidBlocker ? 'Paid use off' : 'Paid use on'}</span></div>
+    <p class="small">API key: <b>${o.keySource ? esc(o.keyHint || o.keySource) : 'not set'}</b>${o.keySource === 'unreadable' ? ' (saved key cannot be read; save it again)' : ''}. Keys are stored encrypted on the server and never shown again.</p>
+    <div class="kw"><input type="password" id="ai-key" autocomplete="off" placeholder="sk-…  (paste a new key)" aria-label="OpenAI API key"><button class="btn" data-ai-savekey="1">Save key</button></div>
+    ${o.keySource === 'saved' ? '<button class="btn bad" data-ai-removekey="1">Remove saved key</button>' : ''}
+    <label class="toggle"><input type="checkbox" id="ai-allow" ${o.allowPaid ? 'checked' : ''}> Allow paid OpenAI API usage (each book still needs your approval)</label>
+    <div class="grid2">
+      <label class="field">Monthly limit (USD)<span class="hint">$0 keeps paid use off</span><input type="number" id="ai-monthly" min="0" step="1" value="${lim.monthlyUsd}"></label>
+      <label class="field">Default book budget (USD)<input type="number" id="ai-perbook" min="0" step="1" value="${lim.perBookDefaultUsd}"></label>
+      <label class="field">Text model<input type="text" id="ai-textmodel" value="${esc(o.textModel)}"></label>
+      <label class="field">Image model<input type="text" id="ai-imagemodel" value="${esc(o.imageModel)}"></label>
+      <label class="field">Image quality<select id="ai-quality">${['low', 'medium', 'high'].map((q) => `<option value="${q}" ${o.imageQuality === q ? 'selected' : ''}>${q} (~${money(o.prices.image[q])}/image)</option>`).join('')}</select></label>
+    </div>
+    <details><summary>Price table used for estimates</summary>
+      <p class="small muted">${esc(o.pricesNote)}</p>
+      <div class="grid2">
+        ${['low', 'medium', 'high'].map((q) => `<label class="field">Image, ${q} ($)<input type="number" step="0.001" id="ai-price-${q}" value="${o.prices.image[q]}"></label>`).join('')}
+        <label class="field">Text input ($ / 1M tokens)<input type="number" step="0.01" id="ai-price-tin" value="${o.prices.textInputPerM}"></label>
+        <label class="field">Text output ($ / 1M tokens)<input type="number" step="0.01" id="ai-price-tout" value="${o.prices.textOutputPerM}"></label>
+      </div>
+    </details>
+    <button class="btn primary block" data-ai-save="openai">Save OpenAI settings</button>
+    <p class="small num">This month (${esc(sp.month)}): ${money(sp.monthSpent)} spent through this app · ${money(sp.monthlyRoom)} left of your limit. Estimates only; OpenAI's own usage page is authoritative.</p>
+    ${sp.recent.length ? `<details><summary>Recent paid requests (${sp.recent.length})</summary><ul class="checks">${sp.recent.map((r) => `<li><span class="small num">${money(r.usd)}</span><div class="small">${esc(r.kind)} · ${esc(r.model)} · ${new Date(r.at).toLocaleString()}</div></li>`).join('')}</ul></details>` : ''}
+  </section>
+
+  <section class="card">
+    <h2>Local models (your own computer)</h2>
+    <label class="field">Text server (Ollama) address<input type="url" id="ai-ltext" value="${esc(l.textUrl)}" placeholder="http://192.168.1.20:11434"></label>
+    <label class="field">Text model<input type="text" id="ai-lmodel" value="${esc(l.textModel)}"></label>
+    <label class="field">Image server (Stable Diffusion web UI with API) address<input type="url" id="ai-limage" value="${esc(l.imageUrl)}" placeholder="http://192.168.1.20:7860"></label>
+    <div class="grid2">
+      <label class="field">Steps<input type="number" id="ai-lsteps" value="${l.imageSteps}"></label>
+      <label class="field">Width × height<input type="text" id="ai-lsize" value="${l.imageWidth}x${l.imageHeight}"></label>
+    </div>
+    <div class="btn-row"><button class="btn primary" data-ai-save="local">Save</button><button class="btn" data-ai-check="1">Check hardware and connection</button></div>
+    <p class="small muted">This server: ${esc(AI.server.platform)}, ${AI.server.cpus} CPU(s), ${AI.server.memGB} GB RAM${AI.server.onRender ? ', Render (no GPU)' : ''}${AI.server.gpuDeviceFound ? ', GPU device found' : ''}.</p>
+    ${lc ? `<div class="card calc">${(lc.verdict || []).map((v) => `<p class="small">${esc(v)}</p>`).join('')}
+      ${lc.text ? `<p class="small num">Text server: ${lc.text.reachable ? `reachable · ${lc.text.models.length} model(s) · ${lc.text.tokensPerSecond ?? '?'} tokens/s` : esc(lc.text.error)}</p>` : ''}
+      ${lc.image ? `<p class="small num">Image server: ${lc.image.reachable ? `reachable · GPU memory ${lc.image.vramGB ?? 'unknown'} GB · ~${lc.image.estSecondsPerImage}s per picture` : esc(lc.image.error)}</p>` : ''}
+      <p class="small muted">Checked ${new Date(lc.checkedAt).toLocaleString()}</p></div>` : ''}
+  </section>`;
+}
+function readAI(section) {
+  const v = (id) => $('#' + id)?.value;
+  if (section === 'openai') return {
+    openai: { allowPaid: $('#ai-allow').checked, textModel: v('ai-textmodel'), imageModel: v('ai-imagemodel'), imageQuality: v('ai-quality'),
+      prices: { textInputPerM: v('ai-price-tin'), textOutputPerM: v('ai-price-tout'), image: { low: v('ai-price-low'), medium: v('ai-price-medium'), high: v('ai-price-high') } } },
+    limits: { monthlyUsd: v('ai-monthly'), perBookDefaultUsd: v('ai-perbook') },
+  };
+  const [w, h] = String(v('ai-lsize') || '').split(/x|×/i).map(Number);
+  return { local: { textUrl: v('ai-ltext'), textModel: v('ai-lmodel'), imageUrl: v('ai-limage'), imageSteps: v('ai-lsteps'), imageWidth: w || 768, imageHeight: h || 1024 } };
+}
+
 function viewOverview() {
   const c = counts(), n = S.illustrations.length, I = S.specs.interior, C = S.specs.cover;
   const seg = (k, color) => `<span style="width:${(c[k] / n) * 100}%;background:var(${color})"></span>`;
@@ -227,6 +371,7 @@ function viewOverview() {
     <button class="btn primary block" data-go="pages">${c.approved === n ? 'Review pages' : `Review pages (${n - c.approved} to go)`}</button>
     ${autoExportLine()}
   </section>
+  ${generatePanel()}
   ${storageCard()}
   <section class="card">
     <div class="section-head"><h2>Interior layout</h2><span class="pill ${I.issues.length ? 'st-fail' : 'st-pass'}">${I.issues.length ? 'Needs fixing' : 'Meets KDP rules'}</span></div>
@@ -466,14 +611,36 @@ document.addEventListener('click', async (e) => {
     if (t.dataset.tab || t.dataset.go) {
       tab = t.dataset.tab || t.dataset.go; history.replaceState(null, '', '#' + tab);
       if (tab === 'books') await loadLibrary();
+      if (tab === 'ai') AI = await api('/api/ai/settings');
       render(); scrollTo(0, 0); return;
     }
+    if (t.dataset.genStart) {
+      t.disabled = true;
+      const res = await api('/api/generate/start', { method: 'POST', body: { textProvider: gen.textProvider, imageProvider: gen.imageProvider, coverProvider: gen.coverProvider, autoApprove: gen.autoApprove, approve: gen.approve, approvedBudgetUsd: Number(gen.budget) || 0 } });
+      gen.approve = false; setState(res); toast('Generation started'); return;
+    }
+    if (t.dataset.genStop) { setState(await api('/api/generate/stop', { method: 'POST' })); toast('Stopped. Nothing else will be sent.'); return; }
+    if (t.dataset.genResume) { setState(await api('/api/generate/resume', { method: 'POST', body: { approve: gen.approve, approvedBudgetUsd: Number(gen.budget) || 0 } })); gen.approve = false; toast('Resumed'); return; }
+    if (t.dataset.genRetry) { setState(await api('/api/generate/retry-failed', { method: 'POST', body: { approve: gen.approve, approvedBudgetUsd: Number(gen.budget) || 0 } })); toast('Retrying failed pages'); return; }
+    if (t.dataset.approveAll) {
+      if (!confirmApproveAll) { confirmApproveAll = true; render(); return; }
+      confirmApproveAll = false;
+      const out = await api('/api/approve-all', { method: 'POST', body: { confirm: true } });
+      setState(out); toast(`Approved ${out.approved} page(s)`); return;
+    }
+    if (t.dataset.aiSave) { AI = await api('/api/ai/settings', { method: 'PUT', body: readAI(t.dataset.aiSave) }); render(); toast('Saved'); return; }
+    if (t.dataset.aiSavekey) {
+      const k = $('#ai-key').value.trim(); if (!k) { toast('Paste a key first'); return; }
+      AI = await api('/api/ai/settings', { method: 'PUT', body: { openai: { apiKey: k } } }); render(); toast('Key saved on the server'); return;
+    }
+    if (t.dataset.aiRemovekey) { AI = await api('/api/ai/settings', { method: 'PUT', body: { openai: { removeKey: true } } }); render(); toast('Saved key removed'); return; }
+    if (t.dataset.aiCheck) { t.disabled = true; toast('Checking… this can take a minute'); localCheck = await api('/api/ai/check-local', { method: 'POST' }); AI = await api('/api/ai/settings'); render(); return; }
     if (t.dataset.newbook) { newBook.open = t.dataset.newbook === 'open'; if (newBook.open) refreshPreview(); render(); return; }
     if (t.dataset.count) { newBook.count = Number(t.dataset.count); newBook.custom = ''; render(); refreshPreview(); return; }
     if (t.id === 'createBook') {
       t.disabled = true;
-      const out = await api('/api/books', { method: 'POST', body: { title: newBook.title, theme: newBook.theme, author: newBook.author || '', illustrationCount: newBookCount(), trim: newBook.trim, paper: newBook.paper, includeIntro: newBook.intro } });
-      newBook = { open: false, title: '', theme: '', count: 30, custom: '', trim: '8.5x11', paper: 'white', intro: true };
+      const out = await api('/api/books', { method: 'POST', body: { title: newBook.title, theme: newBook.theme || newBook.idea, idea: newBook.idea, type: newBook.type, author: newBook.author || '', illustrationCount: newBookCount(), trim: newBook.trim, paper: newBook.paper, includeIntro: newBook.intro } });
+      newBook = { open: false, title: '', theme: '', idea: '', type: 'coloring', count: 30, custom: '', trim: '8.5x11', paper: 'white', intro: true };
       bookId = out.bookId; tab = 'overview'; await load(); scrollTo(0, 0); toast('Book created'); return;
     }
     if (t.dataset.open) { await openBook(t.dataset.open); tab = 'overview'; render(); scrollTo(0, 0); return; }
@@ -542,6 +709,8 @@ document.addEventListener('input', (e) => {
   const id = e.target.id;
   if (id === 'nb-title') { newBook.title = e.target.value; return; }
   if (id === 'nb-theme') { newBook.theme = e.target.value; return; }
+  if (id === 'nb-idea') { newBook.idea = e.target.value; return; }
+  if (id === 'gen-budget') { gen.budget = e.target.value; return; }
   if (id === 'nb-author') { newBook.author = e.target.value; return; }
   if (id === 'nb-custom') { newBook.custom = e.target.value.trim(); refreshPreview(); return; }
   const m = e.target.id.match(/^f-kw-(\d)$/);
@@ -551,6 +720,10 @@ document.addEventListener('input', (e) => {
 document.addEventListener('change', async (e) => {
   const el = e.target;
   if (el.id === 'nb-trim') { newBook.trim = el.value; refreshPreview(); return; }
+  if (el.id === 'nb-type') { newBook.type = el.value; return; }
+  if (['gen-text', 'gen-image', 'gen-cover'].includes(el.id)) { gen[{ 'gen-text': 'textProvider', 'gen-image': 'imageProvider', 'gen-cover': 'coverProvider' }[el.id]] = el.value; gen.approve = false; await refreshEstimate(); return; }
+  if (el.id === 'gen-auto') { gen.autoApprove = el.checked; return; }
+  if (el.id === 'gen-approve') { gen.approve = el.checked; render(); return; }
   if (el.id === 'nb-paper') { newBook.paper = el.value; refreshPreview(); return; }
   if (el.id === 'nb-intro') { newBook.intro = el.checked; refreshPreview(); return; }
   try {

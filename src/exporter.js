@@ -58,4 +58,28 @@ async function exportCover(state, { mode = 'template' } = {}) {
   return { ok: rep.ok, file, report: rep };
 }
 
-module.exports = { exportInterior, exportCover, preflightFinal };
+// One PDF build at a time: big books take minutes on a small server and must not overlap in memory.
+let chain = Promise.resolve();
+function exclusive(fn) { const p = chain.then(fn, fn); chain = p.catch(() => {}); return p; }
+
+// Build the final interior + cover if every illustration is approved; records the result on the book.
+async function assembleIfComplete(bs) {
+  const s = bs.load();
+  if (!s.illustrations.every((i) => bs.approvedImageFile(i))) return null;
+  s.autoExport = { at: new Date().toISOString(), status: 'running' };
+  bs.save();
+  return exclusive(async () => {
+    try {
+      const interior = await exportInterior(s, { mode: 'final' });
+      const cover = await exportCover(s, { mode: 'print' });
+      const why = (out) => (out.ok ? [] : out.report.checks.filter((c) => c.status === 'fail').map((c) => c.label + (c.detail ? ` (${c.detail})` : '')));
+      s.autoExport = { at: new Date().toISOString(), status: 'done', interior: { ok: interior.ok, file: interior.file?.name || null, problems: why(interior) }, cover: { ok: cover.ok, file: cover.file?.name || null, problems: why(cover) } };
+    } catch (e) {
+      s.autoExport = { at: new Date().toISOString(), status: 'failed', error: e.message };
+    }
+    bs.save();
+    return s.autoExport;
+  });
+}
+
+module.exports = { exportInterior, exportCover, preflightFinal, exclusive, assembleIfComplete };

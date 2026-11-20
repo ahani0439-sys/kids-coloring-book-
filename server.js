@@ -10,7 +10,11 @@ const storage = require('./src/storage');
 const store = require('./src/store');
 const images = require('./src/images');
 const { KDP, TRIMS, PAPERS, bookSpecs, maxIllustrations } = require('./src/kdp');
-const { exportInterior, exportCover, preflightFinal } = require('./src/exporter');
+const { exportInterior, exportCover, preflightFinal, exclusive, assembleIfComplete } = require('./src/exporter');
+const aiSettings = require('./src/ai/settings');
+const aiJobs = require('./src/ai/jobs');
+const aiHardware = require('./src/ai/hardware');
+const { BOOK_TYPES } = require('./src/content');
 
 if (config.production && !config.password) {
   console.error('Refusing to start: set APP_PASSWORD in the environment (Render > your service > Environment).');
@@ -73,9 +77,6 @@ app.get('/healthz', (req, res) => res.send('ok'));
 const wrap = (fn) => (req, res) => Promise.resolve(fn(req, res)).catch((e) => { console.error(e); res.status(e.status || 500).json({ error: e.message }); });
 const { library } = store;
 
-// One PDF build at a time: big books take minutes on a small server and must not overlap in memory.
-let exportChain = Promise.resolve();
-function exclusive(fn) { const p = exportChain.then(fn, fn); exportChain = p.catch(() => {}); return p; }
 
 function specs(state) {
   return { ...bookSpecs(state.book, state.illustrations.length), kdp: KDP };
@@ -91,6 +92,8 @@ function publicState(bs) {
     coverArt: s.coverArt,
     autoExport: s.autoExport || null,
     exportJob: s.exportJob || null,
+    genJob: s.genJob ? { ...s.genJob, running: aiJobs.isRunning(bs.id), log: (s.genJob.log || []).slice(-12) } : null,
+    ai: s.ai ? { spec: s.ai.spec || null, characterBible: s.ai.characterBible || null, styleGuide: s.ai.styleGuide || null, planSource: s.ai.plan?.source || null, plannedAt: s.ai.plannedAt || null } : null,
     migratedFrom: s.migratedFrom || null,
     specs: specs(s),
     exports: bs.listExports(),
@@ -101,7 +104,7 @@ function publicState(bs) {
   };
 }
 function libraryState() {
-  return { books: library.summaries(), defaultBookId: library.defaultId(), migratedFrom: library.load().migratedFrom || null, trims: TRIMS, papers: PAPERS, config: publicConfig(), storage: storage.status() };
+  return { books: library.summaries(), defaultBookId: library.defaultId(), migratedFrom: library.load().migratedFrom || null, trims: TRIMS, papers: PAPERS, bookTypes: BOOK_TYPES, config: publicConfig(), storage: storage.status() };
 }
 
 // ---------- library: create, list, rename, duplicate, archive, open ----------
@@ -124,7 +127,7 @@ app.post('/api/books', (req, res) => {
   const { interior } = bookSpecs(book, n || 1);
   if (!n || n < 1) return res.status(400).json({ error: 'Enter how many illustrations the book should have.' });
   if (interior.issues.length) return res.status(400).json({ error: interior.issues.join(' ') });
-  const bs = library.create({ title: String(b.title || '').trim().slice(0, 200), theme: String(b.theme || '').trim().slice(0, 120), illustrationCount: n, ...book, author: String(b.author || '').slice(0, 120) });
+  const bs = library.create({ title: String(b.title || '').trim().slice(0, 200), theme: String(b.theme || b.idea || '').trim().slice(0, 120), idea: String(b.idea || '').slice(0, 1000), type: b.type, illustrationCount: n, ...book, author: String(b.author || '').slice(0, 120) });
   library.open(bs.id);
   res.status(201).json({ bookId: bs.id, library: libraryState(), state: publicState(bs) });
 });
@@ -139,6 +142,20 @@ app.post('/api/books/:bookId/open', wrap(async (req, res) => {
   library.open(req.params.bookId); res.json(libraryState());
 }));
 
+// ---------- AI providers (admin settings; keys stay on the server) ----------
+const PROVIDER_INFO = {
+  manual: 'Manual: free and always available. Plan with templates, upload your own pictures (for example made in the ChatGPT app with your ChatGPT subscription).',
+  openai: 'OpenAI API: optional and billed separately by OpenAI per request (pay as you go). A ChatGPT Plus/Pro subscription does NOT include API usage.',
+  local: 'Local models: free to run, but need your own computer (Ollama for text, a Stable Diffusion web UI for pictures; a GPU is strongly recommended). Not possible on Render Free.',
+  builtin: 'Built-in drawings: free, Dino book pages only.',
+};
+app.get('/api/ai/settings', (req, res) => res.json({ ...aiSettings.publicSettings(), server: aiHardware.serverFacts(), providers: PROVIDER_INFO }));
+app.put('/api/ai/settings', wrap(async (req, res) => {
+  try { aiSettings.update(req.body || {}); } catch (e) { e.status = 400; throw e; }
+  res.json({ ...aiSettings.publicSettings(), server: aiHardware.serverFacts(), providers: PROVIDER_INFO });
+}));
+app.post('/api/ai/check-local', wrap(async (req, res) => res.json(await aiHardware.checkLocal())));
+
 // ---------- one book (mounted at /api/books/:bookId and, for older links, at /api for the open book) ----------
 const book = express.Router({ mergeParams: true });
 
@@ -148,7 +165,7 @@ book.put('/book', wrap(async (req, res) => {
   const bs = req.bs, s = bs.load();
   const b = req.body || {};
   const str = (v, max) => String(v ?? '').slice(0, max);
-  if ('title' in b) s.book.title = str(b.title, 200) || s.book.title;
+  if ('title' in b && str(b.title, 200) && str(b.title, 200) !== s.book.title) { s.book.title = str(b.title, 200); s.book.titleFromUser = true; }
   if ('subtitle' in b) s.book.subtitle = str(b.subtitle, 200);
   if ('theme' in b) s.book.theme = str(b.theme, 120);
   if ('author' in b) s.book.author = str(b.author, 120);
@@ -158,6 +175,8 @@ book.put('/book', wrap(async (req, res) => {
   if ('publisherNote' in b) s.book.publisherNote = str(b.publisherNote, 1000);
   if (Array.isArray(b.keywords)) s.book.keywords = b.keywords.slice(0, 7).map((k) => str(k, 50));
   if ('includeIntro' in b) s.book.includeIntro = !!b.includeIntro;
+  if (BOOK_TYPES[b.type]) s.book.type = b.type;
+  if ('idea' in b) s.book.idea = str(b.idea, 1000);
   if (TRIMS[b.trim]) s.book.trim = b.trim;
   if (PAPERS[b.paper]) s.book.paper = b.paper;
   if (b.margins) for (const k of ['inside', 'outside', 'top', 'bottom']) if (k in b.margins) s.book.margins[k] = Math.max(0, Math.min(2, Number(b.margins[k]) || 0));
@@ -172,6 +191,32 @@ book.put('/book', wrap(async (req, res) => {
   res.json(publicState(bs));
 }));
 
+// Generate Full Book: estimate (no cost), start (needs approval if paid), stop, resume, retry failed pages.
+book.post('/generate/estimate', (req, res) => res.json(aiJobs.estimateFor(req.bs, req.body || {})));
+book.post('/generate/start', wrap(async (req, res) => {
+  try { aiJobs.start(req.bs, req.body || {}); } catch (e) { return res.status(e.status || 500).json({ error: e.message, needsApproval: e.needsApproval || false, estimate: e.estimate || null }); }
+  res.status(202).json(publicState(req.bs));
+}));
+book.post('/generate/stop', (req, res) => { aiJobs.stop(req.bs); res.json(publicState(req.bs)); });
+book.post('/generate/resume', wrap(async (req, res) => {
+  try { aiJobs.resume(req.bs, req.body || {}); } catch (e) { return res.status(e.status || 500).json({ error: e.message, needsApproval: e.needsApproval || false, estimate: e.estimate || null }); }
+  res.status(202).json(publicState(req.bs));
+}));
+book.post('/generate/retry-failed', wrap(async (req, res) => {
+  try { aiJobs.retryFailed(req.bs, req.body || {}); } catch (e) { return res.status(e.status || 500).json({ error: e.message, needsApproval: e.needsApproval || false, estimate: e.estimate || null }); }
+  res.status(202).json(publicState(req.bs));
+}));
+// Approve every page that is waiting for review (the app asks for a second tap first).
+book.post('/approve-all', wrap(async (req, res) => {
+  const bs = req.bs, s = bs.load();
+  if (req.body?.confirm !== true) return res.status(409).json({ error: 'Confirm to approve all pages in review.', needsConfirm: true });
+  let n = 0;
+  for (const il of s.illustrations) if (il.status === 'review' && il.image) { il.status = 'approved'; il.approvedAt = new Date().toISOString(); bs.logDecision(il, 'approved', { bulk: true }); n++; }
+  bs.save();
+  if (s.illustrations.every((i) => bs.approvedImageFile(i))) assembleIfComplete(bs);
+  res.json({ approved: n, state: publicState(bs) });
+}));
+
 book.put('/illustrations/:id/prompt', (req, res) => {
   const il = req.bs.getIllustration(req.params.id);
   if (!il) return res.status(404).json({ error: 'Not found' });
@@ -183,6 +228,10 @@ book.put('/illustrations/:id/prompt', (req, res) => {
 book.post('/illustrations/:id/generate', (req, res) => {
   const il = req.bs.getIllustration(req.params.id);
   if (!il) return res.status(404).json({ error: 'Not found' });
+  if (['openai', 'local'].includes(req.bs.load().genJob?.spec?.imageProvider) && il.status !== 'approved') {
+    try { aiJobs.regeneratePage(req.bs, il); } catch (e) { return res.status(e.status || 409).json({ error: e.message }); }
+    return res.status(202).json(publicState(req.bs));
+  }
   const err = images.queueGeneration(req.bs, il);
   if (err) return res.status(409).json({ error: err });
   res.status(202).json(publicState(req.bs));
@@ -248,7 +297,11 @@ book.post('/illustrations/:id/:action', wrap(async (req, res) => {
     if (il.image) { bs.logDecision(il, 'regenerate requested'); images.archive(bs, il, 'regenerate requested'); }
     il.regenerateRequested = true;
     il.status = 'rejected';
-    note = images.queueGeneration(bs, il); // may refuse (no drawing for this page, daily cap); the rejection still stands
+    const prov = s.genJob?.spec?.imageProvider;
+    if (['openai', 'local'].includes(prov)) {
+      il.status = 'empty';
+      try { aiJobs.regeneratePage(bs, il); } catch (e) { note = e.message; il.status = 'rejected'; }
+    } else note = images.queueGeneration(bs, il); // may refuse (no drawing for this page, daily cap); the rejection still stands
   } else if (action === 'reset') {
     if (il.image) { bs.logDecision(il, 'reset'); images.archive(bs, il, 'reset'); }
     il.status = 'empty';
@@ -257,21 +310,7 @@ book.post('/illustrations/:id/:action', wrap(async (req, res) => {
 
   // Once every required illustration is approved, assemble the final files automatically, in the
   // background (it can take minutes on a small free server), so the Approve tap answers right away.
-  if (action === 'approve' && s.illustrations.every((i) => bs.approvedImageFile(i))) {
-    s.autoExport = { at: new Date().toISOString(), status: 'running' };
-    bs.save();
-    exclusive(async () => {
-      try {
-        const interior = await exportInterior(s, { mode: 'final' });
-        const cover = await exportCover(s, { mode: 'print' });
-        const why = (out) => out.ok ? [] : out.report.checks.filter((c) => c.status === 'fail').map((c) => c.label + (c.detail ? ` (${c.detail})` : ''));
-        s.autoExport = { at: new Date().toISOString(), status: 'done', interior: { ok: interior.ok, file: interior.file?.name || null, problems: why(interior) }, cover: { ok: cover.ok, file: cover.file?.name || null, problems: why(cover) } };
-      } catch (e) {
-        s.autoExport = { at: new Date().toISOString(), status: 'failed', error: e.message };
-      }
-      bs.save();
-    });
-  }
+  if (action === 'approve' && s.illustrations.every((i) => bs.approvedImageFile(i))) assembleIfComplete(bs);
   res.json({ ...publicState(bs), note });
 }));
 
@@ -290,7 +329,7 @@ book.post('/cover-art', upload.single('image'), wrap(async (req, res) => {
   const file = `cover-${Date.now()}.jpg`;
   storage.writeFile(path.join(bs.DIRS.cover, file), buf);
   const meta = await sharp(buf).metadata();
-  s.coverArt = { file, px: { w: meta.width, h: meta.height }, at: new Date().toISOString() };
+  s.coverArt = { file, px: { w: meta.width, h: meta.height }, sourcePx: buf.sourcePx, at: new Date().toISOString() };
   bs.save();
   res.json(publicState(bs));
 }));

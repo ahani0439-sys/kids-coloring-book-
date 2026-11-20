@@ -178,6 +178,8 @@ async function validateCover(bytes, manifest, state) {
   r.check(inside(bc, shrink(back, KDP.barcode.inset - EPS_IN)), 'barcode-position', 'Barcode area sits on the back cover inside the trim', '');
 
   const lowDpi = manifest.images.filter((i) => i.dpi < KDP.minDpi);
+  const soft = manifest.images.filter((i) => i.sourcePx && i.sourcePx.w * 2 < i.pxW);
+  if (soft.length) r.warn('cover-art-upscaled', 'Cover artwork was enlarged more than 2x from its original size', soft.map((i) => `${i.label}: ${i.sourcePx.w} × ${i.sourcePx.h} px original`).join('; ') + '. Check it looks sharp in the KDP previewer.');
   r.check(!lowDpi.length, 'cover-dpi', `Cover images are at least ${KDP.minDpi} DPI`, lowDpi.map((i) => `${i.label}: ${i.dpi} dpi`).join('; ') || (manifest.images.length ? `${manifest.images.length} image(s) OK` : 'No images on cover yet'));
   const fonts = fontsEmbedded(doc);
   r.check(!fonts.missing.length, 'fonts-embedded', 'All fonts are embedded', fonts.missing.join(', ') || `${fonts.count} embedded font(s)`);

@@ -77,6 +77,7 @@ const DEFAULT_BOOK = {
     'dinosaur gifts for kids birthday',
   ],
   includeIntro: true,
+  type: 'coloring', // 'coloring' (picture only) or 'story' (picture + one short sentence)
   margins: { inside: 0.625, outside: 0.5, top: 0.5, bottom: 0.5 },
   paper: 'white',
   cover: { background: '#CFEBD6', accent: '#2F6B4F' },
@@ -99,7 +100,9 @@ function freshIllustration(id, theme) {
   return { id, title: il.title, prompt: il.prompt, status: 'empty', image: null, history: [], regenerateRequested: false, error: null };
 }
 
-function newBookSettings({ title, theme, illustrationCount, includeIntro = true, trim = '8.5x11', paper = 'white', author = '' }) {
+const BOOK_TYPES = { coloring: 'Coloring book (one picture per page)', story: 'Story coloring book (picture + short sentence)' };
+
+function newBookSettings({ title, theme, illustrationCount, includeIntro = true, trim = '8.5x11', paper = 'white', author = '', type = 'coloring', idea = '' }) {
   const n = illustrationCount;
   const t = (theme || 'Cute animals').trim();
   const T = t.charAt(0).toUpperCase() + t.slice(1);
@@ -107,6 +110,9 @@ function newBookSettings({ title, theme, illustrationCount, includeIntro = true,
   return {
     ...JSON.parse(JSON.stringify(DEFAULT_BOOK)),
     title: title || `${T} Coloring Book`,
+    titleFromUser: !!title,
+    type: BOOK_TYPES[type] ? type : 'coloring',
+    idea: String(idea || '').slice(0, 1000),
     subtitle: `${n} ${T} Coloring Pages for Kids`,
     theme: t,
     author,
@@ -125,4 +131,4 @@ function newBookSettings({ title, theme, illustrationCount, includeIntro = true,
   };
 }
 
-module.exports = { STYLE, SUBJECTS, ILLUSTRATIONS, DEFAULT_BOOK, isDinoTheme, illustrationFor, freshIllustration, newBookSettings };
+module.exports = { STYLE, SUBJECTS, ILLUSTRATIONS, DEFAULT_BOOK, BOOK_TYPES, isDinoTheme, illustrationFor, freshIllustration, newBookSettings };
