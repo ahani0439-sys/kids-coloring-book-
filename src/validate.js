@@ -111,6 +111,21 @@ async function validateInterior(bytes, manifest, state) {
   const pdfImageCount = ill.reduce((s, p) => s + pageImageCount(pages[p.n - 1]), 0);
   r.check(pdfImageCount === placed.length, 'image-count-pdf', 'Images found in the PDF match the placed illustrations', `${pdfImageCount} in PDF, ${placed.length} placed`);
 
+  // Artwork content: every placed image must be real line art (enough ink, not a near-empty frame, no gray).
+  if (placed.length) {
+    const sharp = require('sharp');
+    const store = require('./store');
+    const bad = [];
+    for (const p of placed) {
+      const { data } = await sharp(store.imagePath(p.image.file)).resize(450, 600, { fit: 'fill', kernel: 'nearest' }).grayscale().raw().toBuffer({ resolveWithObject: true });
+      let ink = 0, gray = 0;
+      for (const v of data) { if (v < 128) ink++; if (v > 40 && v < 215) gray++; }
+      const ratio = ink / data.length;
+      if (ratio < 0.02 || ratio > 0.45) bad.push(`#${p.illustration} ink ${(ratio * 100).toFixed(1)}%`);
+      else if (gray / data.length > 0.02) bad.push(`#${p.illustration} has gray areas`);
+    }
+    r.check(!bad.length, 'artwork-content', 'Every illustration is real black-and-white line art (2–45% ink, no gray, no empty frames)', bad.join('; ') || `${placed.length} image(s) checked`);
+  }
   const notApproved = placed.filter((p) => state.illustrations.find((i) => i.id === p.illustration)?.status !== 'approved');
   r.check(!notApproved.length, 'only-approved', 'Only approved illustrations are in the book (no rejected or unreviewed images)', notApproved.map((p) => `#${p.illustration}`).join(', '));
   const placeholders = manifest.pages.filter((p) => p.placeholder).length;

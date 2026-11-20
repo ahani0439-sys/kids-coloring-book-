@@ -20,8 +20,9 @@ function load() {
     password: env('APP_PASSWORD'),
     dataDir: path.resolve(env('DATA_DIR') || path.join(__dirname, '..', 'data')),
     image: {
-      provider: p ? provider : provider ? 'invalid' : 'none',
-      label: p ? p.label : null,
+      // Empty or "svg" = the built-in procedural drawing engine (no key, no cost). AI providers are optional.
+      provider: p ? provider : !provider || provider === 'svg' ? 'svg' : 'invalid',
+      label: p ? p.label : !provider || provider === 'svg' ? 'Built-in drawing engine' : null,
       apiKey: p ? env(p.keyVar) : '',
       keyVar: p ? p.keyVar : null,
       model: p ? env(p.modelVar) || p.defaultModel : null,
@@ -50,8 +51,8 @@ function load() {
 function problems(cfg) {
   const out = [];
   if (!cfg.password) out.push(cfg.production ? 'APP_PASSWORD is not set. The app refuses to start in production without it.' : 'APP_PASSWORD is not set (fine for local testing only).');
-  if (cfg.image.provider === 'invalid') out.push(`IMAGE_PROVIDER must be "replicate" or "openai".`);
-  else if (cfg.image.provider !== 'none' && !cfg.image.apiKey) out.push(`${cfg.image.keyVar} is missing for IMAGE_PROVIDER=${cfg.image.provider}.`);
+  if (cfg.image.provider === 'invalid') out.push(`IMAGE_PROVIDER must be empty (built-in engine), "svg", "replicate" or "openai".`);
+  else if (cfg.image.provider !== 'svg' && !cfg.image.apiKey) out.push(`${cfg.image.keyVar} is missing for IMAGE_PROVIDER=${cfg.image.provider}.`);
   if (cfg.storage.backend === 's3') {
     for (const k of ['endpoint', 'bucket', 'accessKeyId', 'secretAccessKey']) if (!cfg.storage[k]) out.push(`S3 storage needs ${{ endpoint: 'S3_ENDPOINT', bucket: 'S3_BUCKET', accessKeyId: 'S3_ACCESS_KEY_ID', secretAccessKey: 'S3_SECRET_ACCESS_KEY' }[k]}.`);
   } else if (!['local', 'mirror'].includes(cfg.storage.backend)) out.push('STORAGE_BACKEND must be "local" or "s3".');
@@ -66,7 +67,7 @@ function publicConfig() {
   return {
     production: config.production,
     passwordSet: !!config.password,
-    image: { provider: i.provider, label: i.label, model: i.model, configured: !!(i.label && i.apiKey), keyVar: i.keyVar, maxPerDay: i.maxPerDay },
+    image: { provider: i.provider, label: i.label, model: i.provider === 'svg' ? require('./engine').ENGINE_VERSION : i.model, configured: i.provider === 'svg' || !!(i.label && i.apiKey), free: i.provider === 'svg', keyVar: i.keyVar, maxPerDay: i.maxPerDay },
     storageBackend: config.storage.backend,
     problems: config.problems,
   };

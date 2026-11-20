@@ -11,7 +11,7 @@ const SUBJECTS = [
   ['Hello, Little T-Rex', 'a baby T-rex hatching from a cracked egg and waving hello, a few small ferns around'],
   ['Triceratops Picnic', 'a smiling triceratops sitting on a picnic blanket holding a sandwich, with an apple and a basket'],
   ['Garden Helper', 'a happy stegosaurus watering big flowers with a watering can'],
-  ['Snack Time Up High', 'a gentle brachiosaurus stretching its long neck to nibble leaves from a tall tree'],
+  ['Baby in the Garden', 'a baby brachiosaurus in a fenced flower garden with a watering can and a butterfly'],
   ['Kite Flyer', 'a cheerful pteranodon flying a kite over rolling hills with a few puffy clouds'],
   ['Drum Band', 'a cute ankylosaurus playing a drum set, music notes floating around'],
   ['Morning Song', 'a parasaurolophus singing happily with simple music notes and a smiling sun'],

@@ -26,12 +26,10 @@ services:
         value: /var/data
       - key: APP_PASSWORD          # required: the app will not start without it
         sync: false
-      - key: IMAGE_PROVIDER        # "replicate" or "openai"
-        value: replicate
-      - key: REPLICATE_API_TOKEN
-        sync: false
-      - key: OPENAI_API_KEY        # only if IMAGE_PROVIDER=openai
-        sync: false
+      # Image generation uses the free built-in drawing engine by default (no key needed).
+      # Optional paid providers: set IMAGE_PROVIDER to "replicate" or "openai" and add its key.
+      - key: IMAGE_PROVIDER
+        value: svg
       - key: MAX_GENERATIONS_PER_DAY
         value: "60"
       - key: STORAGE_BACKEND

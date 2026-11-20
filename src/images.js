@@ -11,9 +11,17 @@ const { config } = require('./config');
 
 const TARGET = { w: 2250, h: 3000 }; // 7.5" x 10" at 300 DPI, 3:4 portrait
 
+const engine = require('./engine');
+const isSvg = () => config.image.provider === 'svg';
+
 function providerStatus() {
   const i = config.image;
-  return { provider: i.provider, label: i.label, model: i.model, configured: !!(i.label && i.apiKey) };
+  if (isSvg()) return { provider: 'svg', label: i.label, model: engine.ENGINE_VERSION, configured: true, free: true };
+  return { provider: i.provider, label: i.label, model: i.model, configured: !!(i.label && i.apiKey), free: false };
+}
+// Whether the current engine can draw this page (the built-in engine needs a designed composition).
+function canGenerate(il) {
+  return isSvg() ? engine.hasComposition(il.id) : providerStatus().configured;
 }
 
 async function generateWithReplicate(prompt) {
@@ -105,6 +113,15 @@ async function prepareCoverArt(input) {
 // ---------- Generation queue with a daily spending cap ----------
 const waiting = [];
 let active = 0;
+let batch = null; // { ids, total, done, failed, startedAt } for "Generate all drafts" progress
+
+function startBatch(ids) {
+  batch = { ids, total: ids.length, done: 0, failed: 0, startedAt: new Date().toISOString() };
+}
+function batchStatus() {
+  if (!batch) return null;
+  return { total: batch.total, done: batch.done, failed: batch.failed, running: batch.done < batch.total, startedAt: batch.startedAt };
+}
 
 function usageToday(state) {
   const day = new Date().toISOString().slice(0, 10);
@@ -119,9 +136,13 @@ function queueGeneration(il) {
   if (!st.configured) return 'Image generation is not configured on the server yet. Set IMAGE_PROVIDER and its API key, or upload an image instead.';
   if (il.status === 'generating') return 'Already generating.';
   if (il.status === 'approved') return 'Approved images are locked. Reject it first to replace it.';
-  const u = usageToday(state);
-  const queued = state.illustrations.filter((i) => i.status === 'generating').length;
-  if (u.generations + queued >= config.image.maxPerDay) return `Daily limit of ${config.image.maxPerDay} generations reached (MAX_GENERATIONS_PER_DAY). Try again tomorrow or raise the limit.`;
+  if (isSvg()) {
+    if (!engine.hasComposition(il.id)) return `The drawing for page ${il.id} has not been designed yet. Pages with drawings: ${engine.available().join(', ')}.`;
+  } else {
+    const u = usageToday(state);
+    const queued = state.illustrations.filter((i) => i.status === 'generating').length;
+    if (u.generations + queued >= config.image.maxPerDay) return `Daily limit of ${config.image.maxPerDay} generations reached (MAX_GENERATIONS_PER_DAY). Try again tomorrow or raise the limit.`;
+  }
   il.status = 'generating';
   il.error = null;
   store.save();
@@ -143,17 +164,30 @@ async function run(id) {
   const il = store.getIllustration(id);
   if (!il || il.status !== 'generating') return;
   try {
-    const raw = await generateRaw(il.prompt);
-    const u = usageToday(state);
-    u.generations++; u.total = (u.total || 0) + 1;
-    const prepared = await prepareLineArt(raw);
-    saveCandidate(il, prepared, `${config.image.provider}:${config.image.model}`);
-    store.logDecision(il, 'generated');
+    if (isSvg()) {
+      // Built-in engine: a fresh seed each time, so Regenerate gives a new variation.
+      const g = engine.generate(il.id);
+      const png = await engine.render(g.svg);
+      const q = await engine.inspect(png);
+      if (q.ink < 0.02 || q.grayPixels > 0) throw new Error('The drawing failed the quality check (blank or gray). Try again.');
+      saveCandidate(il, { buffer: png, sourcePx: { w: q.width, h: q.height }, px: TARGET }, 'svg-engine');
+      const svgFile = il.image.file.replace(/\.png$/, '.svg');
+      storage.writeFile(store.imagePath(svgFile), g.svg);
+      Object.assign(il.image, { engine: g.engine, seed: g.seed, composition: g.composition, drawing: g.name, svgFile, quality: { ink: +q.ink.toFixed(4), regions: q.regions, tinyRegions: q.tinyRegions } });
+    } else {
+      const raw = await generateRaw(il.prompt);
+      const u = usageToday(state);
+      u.generations++; u.total = (u.total || 0) + 1;
+      const prepared = await prepareLineArt(raw);
+      saveCandidate(il, prepared, `${config.image.provider}:${config.image.model}`);
+    }
+    store.logDecision(il, 'generated', { seed: il.image.seed });
   } catch (e) {
     il.status = il.image ? 'review' : 'failed';
     il.error = e.message;
   }
+  if (batch && batch.ids.includes(id)) { batch.done++; if (il.status === 'failed') batch.failed++; }
   store.save();
 }
 
-module.exports = { TARGET, providerStatus, generateRaw, prepareLineArt, saveCandidate, archive, prepareCoverArt, queueGeneration, usageToday };
+module.exports = { TARGET, canGenerate, startBatch, batchStatus, providerStatus, generateRaw, prepareLineArt, saveCandidate, archive, prepareCoverArt, queueGeneration, usageToday };

@@ -69,7 +69,8 @@ function publicState() {
   const u = images.usageToday(s);
   return {
     book: s.book,
-    illustrations: s.illustrations.map((il) => ({ ...il, hasImage: !!(il.image && fs.existsSync(store.imagePath(il.image.file))) })),
+    illustrations: s.illustrations.map((il) => ({ ...il, hasImage: !!(il.image && fs.existsSync(store.imagePath(il.image.file))), canGenerate: images.canGenerate(il) })),
+    batch: images.batchStatus(),
     coverArt: s.coverArt,
     autoExport: s.autoExport || null,
     specs: specs(s),
@@ -118,18 +119,24 @@ app.post('/api/illustrations/:id/generate', (req, res) => {
   res.status(202).json(publicState());
 });
 
-// Queue every page that still needs art (empty, rejected or failed), within the daily cap.
+// "Generate all drafts": queue every page that still needs art and that the engine can draw.
+// Approved pages are never touched. Progress is reported in state.batch.
 app.post('/api/generate-missing', (req, res) => {
   const s = store.load();
   const todo = s.illustrations.filter((il) => ['empty', 'rejected', 'failed'].includes(il.status));
-  let queued = 0, stop = null;
-  for (const il of todo) {
+  const drawable = todo.filter((il) => images.canGenerate(il));
+  const skipped = todo.filter((il) => !images.canGenerate(il)).map((il) => il.id);
+  const ids = [];
+  let stop = null;
+  for (const il of drawable) {
     const err = images.queueGeneration(il);
     if (err) { stop = err; break; }
-    queued++;
+    ids.push(il.id);
   }
-  if (!queued && stop) return res.status(409).json({ error: stop });
-  res.status(202).json({ queued, note: stop, state: publicState() });
+  if (ids.length) images.startBatch(ids);
+  const notes = [stop, skipped.length ? `${skipped.length} page(s) have no drawing designed yet (${skipped.join(', ')}).` : null].filter(Boolean).join(' ');
+  if (!ids.length) return res.status(409).json({ error: notes || 'Nothing to generate: every page already has art waiting or approved.' });
+  res.status(202).json({ queued: ids.length, note: notes || null, state: publicState() });
 });
 
 app.post('/api/illustrations/:id/upload', upload.single('image'), wrap(async (req, res) => {
@@ -153,6 +160,10 @@ app.post('/api/illustrations/:id/:action', wrap(async (req, res) => {
   if (il.status === 'generating') return res.status(409).json({ error: 'A generation is running for this page. Wait for it to finish.' });
   const action = req.params.action;
   let note = null;
+  // Approved artwork is protected: changing it needs an explicit confirmation from the app.
+  if (il.status === 'approved' && action !== 'approve' && req.body?.confirm !== true) {
+    return res.status(409).json({ error: 'This page is approved. Confirm to replace or remove it.', needsConfirm: true });
+  }
   if (action === 'approve') {
     if (il.status !== 'review' || !il.image) return res.status(409).json({ error: 'Only an image waiting for review can be approved.' });
     il.status = 'approved';

@@ -12,6 +12,23 @@ let lastReport = null;
 let busy = false;
 let pollTimer = null;
 let confirmDelete = null;
+let confirmAct = null;
+
+// Full-size preview of one illustration, with the review actions underneath.
+function openPreview(id) {
+  const il = S.illustrations.find((i) => i.id === id);
+  if (!il || !il.hasImage) return;
+  let el = $('#preview');
+  if (!el) { el = document.createElement('div'); el.id = 'preview'; el.className = 'lightbox'; document.body.appendChild(el); }
+  const actions = il.status === 'review'
+    ? `<button class="btn ok" data-act="approve" data-id="${il.id}">Approve</button><button class="btn bad" data-act="reject" data-id="${il.id}">Reject</button><button class="btn" data-act="regenerate" data-id="${il.id}" ${il.canGenerate ? '' : 'disabled'}>Regenerate</button>`
+    : '';
+  el.innerHTML = `<div class="lightbox-bar"><strong>${il.id}. ${esc(il.title)}</strong><button class="btn ghost" data-closepreview="1" aria-label="Close preview">Close</button></div>
+    <div class="lightbox-img"><img src="/api/illustrations/${il.id}/image?v=${encodeURIComponent(il.image.file)}" alt="Full-size preview of illustration ${il.id}"></div>
+    <div class="lightbox-bar"><span class="pill st-${il.status}">${STATUS[il.status]}</span><div class="btn-row">${actions}</div></div>`;
+  el.hidden = false;
+}
+function closePreview() { const el = $('#preview'); if (el) el.hidden = true; }
 
 async function api(path, opts = {}) {
   const res = await fetch(path, { headers: opts.body && !(opts.body instanceof FormData) ? { 'Content-Type': 'application/json' } : {}, ...opts, body: opts.body && !(opts.body instanceof FormData) ? JSON.stringify(opts.body) : opts.body });
@@ -27,7 +44,7 @@ async function load() { S = await api('/api/state'); render(); schedulePoll(); }
 function setState(next) { S = next.state || next; render(); schedulePoll(); }
 function schedulePoll() {
   clearTimeout(pollTimer);
-  if (S.illustrations.some((i) => i.status === 'generating')) pollTimer = setTimeout(load, 4000);
+  if (S.illustrations.some((i) => i.status === 'generating')) pollTimer = setTimeout(load, 2000);
   else if (S.storage.pending) pollTimer = setTimeout(load, 2500);
 }
 
@@ -154,10 +171,27 @@ function viewPages() {
   return `
   <div class="section-head"><h1>Coloring pages</h1><span class="muted small">${c.approved} of ${S.illustrations.length} approved</span></div>
   <div class="chips" role="group" aria-label="Filter">${filters.map(([k, l]) => `<button class="chip" data-filter="${k}" aria-pressed="${filter === k}">${l}</button>`).join('')}</div>
-  ${gen ? `<div class="btn-row"><button class="btn primary" data-genmissing="1" ${c.empty + c.rejected + c.failed ? '' : 'disabled'}>Generate all missing (${c.empty + c.rejected + c.failed})</button></div>
-  <p class="small muted num">${esc(S.config.image.label)} · ${esc(S.config.image.model)} · ${S.usage.today} of ${S.usage.maxPerDay} generations used today</p>` : `<p class="small muted">Generation is off until the server has an image provider. Upload works now.</p>`}
+  ${gen ? draftsPanel(c) : `<p class="small muted">Generation is off until the server has an image provider. Upload works now.</p>`}
   <p class="small muted">Rejected images are moved out of the book folder and can never be placed in a PDF. Uploads and generated images are converted to pure black-and-white line art at 2250 × 3000 px.</p>
   <div class="gallery">${list.map((il) => card(il, gen)).join('') || '<p class="muted">Nothing here.</p>'}</div>`;
+}
+
+function draftsPanel(c) {
+  const todo = S.illustrations.filter((il) => ['empty', 'rejected', 'failed'].includes(il.status));
+  const drawable = todo.filter((il) => il.canGenerate).length;
+  const b = S.batch;
+  const img = S.config.image;
+  const engineLine = img.free
+    ? `${esc(img.label)} · ${esc(img.model)} · free, no API key`
+    : `${esc(img.label)} · ${esc(img.model)} · ${S.usage.today} of ${S.usage.maxPerDay} generations used today`;
+  const progress = b ? `<div class="card" style="gap:8px">
+      <div class="section-head"><strong>${b.running ? 'Drawing drafts…' : 'Drafts finished'}</strong><span class="small num">${b.done} of ${b.total}${b.failed ? ` · ${b.failed} failed` : ''}</span></div>
+      <div class="progress" role="progressbar" aria-valuemin="0" aria-valuemax="${b.total}" aria-valuenow="${b.done}"><span style="width:${(b.done / b.total) * 100}%;background:var(--ok)"></span></div>
+      ${b.running ? '' : '<span class="small muted">Every draft now waits in Review. Nothing goes into the book until you approve it.</span>'}
+    </div>` : '';
+  return `<div class="btn-row"><button class="btn primary" data-genmissing="1" ${drawable && !(b && b.running) ? '' : 'disabled'}>Generate all drafts (${drawable})</button></div>
+    ${progress}
+    <p class="small muted num">${engineLine}${img.free && todo.length > drawable ? ` · ${todo.length - drawable} page(s) still need a drawing design` : ''}</p>`;
 }
 
 function card(il, gen) {
@@ -168,16 +202,23 @@ function card(il, gen) {
       : `<div class="ph"><b>${il.id}</b>No image yet<br>${il.history.length ? `${il.history.length} earlier image(s) rejected` : ''}</div>`;
   const upload = `<label class="btn ghost" for="up-${il.id}">Upload<input id="up-${il.id}" type="file" accept="image/*" data-upload="${il.id}" hidden></label>`;
   let actions = '';
-  if (il.status === 'review') actions = `<button class="btn ok" data-act="approve" data-id="${il.id}">Approve</button><button class="btn bad" data-act="reject" data-id="${il.id}">Reject</button><button class="btn" data-act="regenerate" data-id="${il.id}">${gen ? 'Regenerate' : 'Reject &amp; redo'}</button>`;
-  else if (il.status === 'approved') actions = `<button class="btn bad" data-act="reject" data-id="${il.id}">Reject</button>`;
-  else if (il.status !== 'generating') actions = `<button class="btn primary" data-gen="${il.id}" ${gen ? '' : 'disabled'}>Generate</button>${upload}`;
-  const src = il.image?.sourcePx ? `<span class="small muted num">Source ${il.image.sourcePx.w} × ${il.image.sourcePx.h} px · ${esc(il.image.origin)}</span>` : '';
+  const preview = il.hasImage ? `<button class="btn ghost" data-preview="${il.id}">Preview</button>` : '';
+  const canGen = gen && il.canGenerate;
+  const confirmKey = (act) => `${act}:${il.id}`;
+  const confirmLabel = (act, label) => (confirmAct === confirmKey(act) ? 'Tap again to confirm' : label);
+  if (il.status === 'review') actions = `<button class="btn ok" data-act="approve" data-id="${il.id}">Approve</button><button class="btn bad" data-act="reject" data-id="${il.id}">Reject</button><button class="btn" data-act="regenerate" data-id="${il.id}" ${canGen ? '' : 'disabled'}>Regenerate</button>${preview}`;
+  else if (il.status === 'approved') actions = `${preview}<button class="btn bad" data-act="reject" data-id="${il.id}" data-confirm="1">${confirmLabel('reject', 'Unapprove')}</button><button class="btn" data-act="regenerate" data-id="${il.id}" data-confirm="1" ${canGen ? '' : 'disabled'}>${confirmLabel('regenerate', 'Replace')}</button>`;
+  else if (il.status !== 'generating') actions = `<button class="btn primary" data-gen="${il.id}" ${canGen ? '' : 'disabled'}>Generate</button>${upload}`;
+  const src = il.image?.drawing
+    ? `<span class="small muted num">Drawing: ${esc(il.image.drawing)} · seed ${il.image.seed} · ${il.image.quality ? `${il.image.quality.regions} coloring areas` : ''}</span>`
+    : il.image?.sourcePx ? `<span class="small muted num">Source ${il.image.sourcePx.w} × ${il.image.sourcePx.h} px · ${esc(il.image.origin)}</span>` : '';
+  const noDesign = gen && !il.canGenerate && !il.hasImage && S.config.image.free ? '<span class="small muted">No drawing designed for this page yet. Upload works.</span>' : '';
   return `<article class="il" id="il-${il.id}">
     <div class="il-art">${art}</div>
     <div class="il-body">
       <div class="il-head"><h3>${il.id}. ${esc(il.title)}</h3><span class="pill st-${il.status}">${STATUS[il.status]}</span></div>
       ${il.regenerateRequested && il.status !== 'generating' ? '<span class="small muted">Regeneration requested</span>' : ''}
-      ${src}
+      ${src}${noDesign}
       ${il.error ? `<p class="err">${esc(il.error)}</p>` : ''}
       <div class="btn-row">${actions}</div>
       <details><summary>Prompt</summary>
@@ -291,9 +332,16 @@ document.addEventListener('click', async (e) => {
   try {
     if (t.dataset.tab || t.dataset.go) { tab = t.dataset.tab || t.dataset.go; history.replaceState(null, '', '#' + tab); render(); scrollTo(0, 0); return; }
     if (t.dataset.filter) { filter = t.dataset.filter; render(); return; }
+    if (t.dataset.preview) { openPreview(Number(t.dataset.preview)); return; }
+    if (t.dataset.closepreview) { closePreview(); return; }
     if (t.dataset.act) {
+      // Approved pages need a second tap before anything replaces or removes them.
+      const key = `${t.dataset.act}:${t.dataset.id}`;
+      if (t.dataset.confirm && confirmAct !== key) { confirmAct = key; render(); return; }
+      confirmAct = null;
       t.disabled = true;
-      const res = await api(`/api/illustrations/${t.dataset.id}/${t.dataset.act}`, { method: 'POST' });
+      closePreview();
+      const res = await api(`/api/illustrations/${t.dataset.id}/${t.dataset.act}`, { method: 'POST', body: t.dataset.confirm ? { confirm: true } : {} });
       setState(res);
       if (res.note) { toast(`Rejected. ${res.note}`); return; }
       toast({ approve: 'Approved', reject: 'Rejected and removed from the book', regenerate: S.config.image.configured ? 'Regenerating' : 'Rejected. Upload or generate a new image.' }[t.dataset.act]);
@@ -303,7 +351,7 @@ document.addEventListener('click', async (e) => {
     if (t.dataset.genmissing) {
       t.disabled = true;
       const out = await api('/api/generate-missing', { method: 'POST' });
-      setState(out); toast(out.note ? `Queued ${out.queued}. ${out.note}` : `Queued ${out.queued} page(s)`); return;
+      setState(out); toast(out.note ? `Drawing ${out.queued} draft(s). ${out.note}` : `Drawing ${out.queued} draft(s)`); return;
     }
     if (t.dataset.gen) { t.disabled = true; setState(await api(`/api/illustrations/${t.dataset.gen}/generate`, { method: 'POST' })); toast('Generation started'); return; }
     if (t.dataset.saveprompt) { setState(await api(`/api/illustrations/${t.dataset.saveprompt}/prompt`, { method: 'PUT', body: { prompt: $('#prompt-' + t.dataset.saveprompt).value } })); toast('Prompt saved'); return; }

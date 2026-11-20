@@ -27,10 +27,13 @@ const expect = (cond, msg) => { if (!cond) { failures++; console.log('  !! EXPEC
   out = await exportInterior(s, { mode: 'final' });
   show('Final interior before approval', out); expect(!out.ok && !out.file, 'final must be refused');
 
-  // Synthetic test art (circles), clearly not real illustrations.
+  // Test fixture only (temp folder, deleted after): the three engine drawings repeated across 30 pages,
+  // so PDF assembly and validation run on real line art. This is not the book.
+  const E = require('../src/engine');
+  const designs = E.available();
   for (const il of s.illustrations) {
-    const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1365"><rect width="100%" height="100%" fill="#fff"/><circle cx="512" cy="680" r="${200 + il.id * 5}" fill="none" stroke="#000" stroke-width="18"/><text x="512" y="700" font-size="120" text-anchor="middle" font-family="sans-serif">${il.id}</text></svg>`;
-    images.saveCandidate(il, await images.prepareLineArt(Buffer.from(svg)), 'smoke-test');
+    const png = await E.render(E.generate(designs[il.id % designs.length], 1000 + il.id).svg);
+    images.saveCandidate(il, await images.prepareLineArt(png), 'smoke-test');
   }
   // Approve all, then reject #5: the final build must refuse and never use the rejected file.
   for (const il of s.illustrations) il.status = 'approved';
@@ -40,13 +43,19 @@ const expect = (cond, msg) => { if (!cond) { failures++; console.log('  !! EXPEC
   out = await exportInterior(s, { mode: 'final' });
   show('Final with one rejected', out); expect(!out.ok && out.report.checks.length === 1 && /#5$/.test(out.report.checks[0].label), 'final must be refused only because of #5');
   expect(!fs.existsSync(store.imagePath(rejectedFile)), 'rejected file must leave the book image folder');
-  const svg = '<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1365"><rect width="100%" height="100%" fill="#fff"/><rect x="200" y="300" width="600" height="700" fill="none" stroke="#000" stroke-width="18"/></svg>';
-  images.saveCandidate(s.illustrations[4], await images.prepareLineArt(Buffer.from(svg)), 'smoke-test');
+  images.saveCandidate(s.illustrations[4], await images.prepareLineArt(await E.render(E.generate(designs[0], 77).svg)), 'smoke-test');
   s.illustrations[4].status = 'approved';
   out = await exportInterior(s, { mode: 'final' });
   show('Final interior', out); expect(out.ok && out.file, 'final interior should build');
   out = await exportCover(s, { mode: 'print' });
-  show('Print cover', out); expect(out.ok && out.file, 'print cover should build');
+  show('Print cover', out);
+  // A nearly blank "placeholder-like" image must never pass the final artwork check.
+  const blankSvg = '<svg xmlns="http://www.w3.org/2000/svg" width="900" height="1200"><rect width="100%" height="100%" fill="#fff"/><rect x="40" y="40" width="820" height="1120" fill="none" stroke="#000" stroke-width="4"/></svg>';
+  images.saveCandidate(s.illustrations[9], await images.prepareLineArt(Buffer.from(blankSvg)), 'smoke-test');
+  s.illustrations[9].status = 'approved';
+  const blocked = await exportInterior(s, { mode: 'final' });
+  show('Final with an empty-frame image', blocked);
+  expect(!blocked.ok && !blocked.file && blocked.report.checks.some((c) => c.id === 'artwork-content' && c.status === 'fail'), 'an empty frame must be refused as artwork'); expect(out.ok && out.file, 'print cover should build');
 
   const finalRep = store.listExports().find((f) => f.name.includes('interior-PRINT')).report;
   expect(!JSON.stringify(finalRep).includes(rejectedFile), 'final report must not reference the rejected file');
