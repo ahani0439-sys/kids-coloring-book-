@@ -70,8 +70,11 @@ async function generateRaw(prompt) {
 // Converts any image to print-ready line art: white background, pure black and white,
 // 2250 x 3000 px (3:4) tagged 300 DPI. Keeps the source size for the upscale warning.
 async function prepareLineArt(input) {
-  const meta = await sharp(input).metadata();
-  if (!meta.width || !meta.height) throw new Error('Unreadable image file');
+  let meta;
+  try { meta = await sharp(input).metadata(); } catch { meta = {}; }
+  if (!meta.width || !meta.height) {
+    throw new Error('This file could not be read. Use PNG or JPEG. On iPhone: in Photos tap Share > Save to Files as JPEG, or set Settings > Camera > Formats > Most Compatible.');
+  }
   const out = await sharp(input)
     .rotate()
     .flatten({ background: '#ffffff' })
@@ -166,7 +169,7 @@ async function run(id) {
   try {
     if (isSvg()) {
       // Built-in engine: a fresh seed each time, so Regenerate gives a new variation.
-      const g = engine.generate(il.id);
+      const g = await engine.generate(il.id);
       const png = await engine.render(g.svg);
       const q = await engine.inspect(png);
       if (q.ink < 0.02 || q.grayPixels > 0) throw new Error('The drawing failed the quality check (blank or gray). Try again.');

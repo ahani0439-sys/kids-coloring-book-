@@ -194,6 +194,15 @@ function draftsPanel(c) {
     <p class="small muted num">${engineLine}${img.free && todo.length > drawable ? ` · ${todo.length - drawable} page(s) still need a drawing design` : ''}</p>`;
 }
 
+// Uploads print best as portrait 3:4 images of at least 2250 x 3000 px (7.5" x 10" at 300 DPI).
+function uploadWarning(px) {
+  const notes = [];
+  if (px.w < 2250 || px.h < 3000) notes.push(`low resolution: enlarged ${Math.max(2250 / px.w, 3000 / px.h).toFixed(1)}×, so lines may look soft in print`);
+  const ratio = px.w / px.h;
+  if (Math.abs(ratio - 0.75) > 0.05) notes.push(`not portrait 3:4, so white bands are added ${ratio > 0.75 ? 'above and below' : 'at the sides'}`);
+  return notes.length ? `<span class="small" style="color:var(--warn)">Check before approving: ${notes.join('; ')}.</span>` : '';
+}
+
 function card(il, gen) {
   const art = il.status === 'generating'
     ? `<div class="ph"><div class="spinner"></div>Generating…</div>`
@@ -211,7 +220,7 @@ function card(il, gen) {
   else if (il.status !== 'generating') actions = `<button class="btn primary" data-gen="${il.id}" ${canGen ? '' : 'disabled'}>Generate</button>${upload}`;
   const src = il.image?.drawing
     ? `<span class="small muted num">Drawing: ${esc(il.image.drawing)} · seed ${il.image.seed} · ${il.image.quality ? `${il.image.quality.regions} coloring areas` : ''}</span>`
-    : il.image?.sourcePx ? `<span class="small muted num">Source ${il.image.sourcePx.w} × ${il.image.sourcePx.h} px · ${esc(il.image.origin)}</span>` : '';
+    : il.image?.sourcePx ? `<span class="small muted num">Source ${il.image.sourcePx.w} × ${il.image.sourcePx.h} px · ${esc(il.image.origin)}</span>${uploadWarning(il.image.sourcePx)}` : '';
   const noDesign = gen && !il.canGenerate && !il.hasImage && S.config.image.free ? '<span class="small muted">No drawing designed for this page yet. Upload works.</span>' : '';
   return `<article class="il" id="il-${il.id}">
     <div class="il-art">${art}</div>

@@ -23,13 +23,13 @@ async function engineChecks() {
   fs.mkdirSync(OUT, { recursive: true });
   const tiles = [];
   for (const smp of SAMPLES) {
-    const g = E.generate(smp.id, smp.seed);
+    const g = await E.generate(smp.id, smp.seed);
     const svg = g.svg;
-    ok(!/<text|<image|gradient|filter|opacity|font/i.test(svg), `#${smp.id} SVG has no text, embedded images, gradients, filters or transparency`);
+    ok(!/<text|<image|gradient|<filter|opacity|font/i.test(svg), `#${smp.id} SVG has no text, embedded images, gradients, filters or transparency`);
     const colors = new Set([...svg.matchAll(/(?:fill|stroke)="([^"]+)"/g)].map((m) => m[1].toLowerCase()));
     ok([...colors].every((c) => ['#000', '#fff', 'none'].includes(c)), `#${smp.id} uses only black, white and none (${[...colors].join(', ')})`);
-    ok(E.generate(smp.id, smp.seed).svg === svg, `#${smp.id} same seed draws the identical page`);
-    ok(E.generate(smp.id, smp.seed + 1).svg !== svg, `#${smp.id} a new seed draws a different variation`);
+    ok((await E.generate(smp.id, smp.seed)).svg === svg, `#${smp.id} same seed draws the identical page`);
+    ok((await E.generate(smp.id, smp.seed + 1)).svg !== svg, `#${smp.id} a new seed draws a different variation`);
     const png = await E.render(svg);
     const q = await E.inspect(png);
     ok(q.width === 2250 && q.height === 3000, `#${smp.id} rendered at 2250 × 3000 px (7.5" × 10" at 300 DPI)`);

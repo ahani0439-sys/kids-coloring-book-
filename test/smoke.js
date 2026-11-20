@@ -32,7 +32,7 @@ const expect = (cond, msg) => { if (!cond) { failures++; console.log('  !! EXPEC
   const E = require('../src/engine');
   const designs = E.available();
   for (const il of s.illustrations) {
-    const png = await E.render(E.generate(designs[il.id % designs.length], 1000 + il.id).svg);
+    const png = await E.render((await E.generate(designs[il.id % designs.length], 1000 + il.id)).svg);
     images.saveCandidate(il, await images.prepareLineArt(png), 'smoke-test');
   }
   // Approve all, then reject #5: the final build must refuse and never use the rejected file.
@@ -43,7 +43,7 @@ const expect = (cond, msg) => { if (!cond) { failures++; console.log('  !! EXPEC
   out = await exportInterior(s, { mode: 'final' });
   show('Final with one rejected', out); expect(!out.ok && out.report.checks.length === 1 && /#5$/.test(out.report.checks[0].label), 'final must be refused only because of #5');
   expect(!fs.existsSync(store.imagePath(rejectedFile)), 'rejected file must leave the book image folder');
-  images.saveCandidate(s.illustrations[4], await images.prepareLineArt(await E.render(E.generate(designs[0], 77).svg)), 'smoke-test');
+  images.saveCandidate(s.illustrations[4], await images.prepareLineArt(await E.render((await E.generate(designs[0], 77)).svg)), 'smoke-test');
   s.illustrations[4].status = 'approved';
   out = await exportInterior(s, { mode: 'final' });
   show('Final interior', out); expect(out.ok && out.file, 'final interior should build');

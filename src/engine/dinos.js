@@ -1,232 +1,252 @@
 // Original cute dinosaur figures for children's coloring pages.
-// Drawn in a 1000 x 1000 local box, feet resting on y = 1000, facing right.
-// Each function takes { x, y, s, flip, rng, ...pose } and returns { svg, box }:
-//   (x, y) is the point under the feet on the page, s the scale, box the page-space bounding box.
+// Drawn in a 1000 x 1000 local box, feet on y = 1000, facing right.
+// Each function takes { x, y, s, flip, rng, ...pose } and returns
+//   { svg, silhouette, boxes, box }  (silhouette = black fills for the scene's occlusion mask)
 //
-// Construction rules (shared by every figure):
-//   - Every body part is one closed path (legs include thigh, shin and foot; tails and arms are tubes).
-//   - Parts are drawn back to front, white-filled, so nearer parts hide lines behind them.
-//   - Bellies, spots and stripes are clipped inside the body (inside()), so nothing pokes out.
-//   - A white halo (all silhouettes, thick white stroke, plus gap fillers between legs) is painted
-//     first, so ground lines, hills and fences stop cleanly at the figure instead of crossing it.
-const { STROKE, DETAIL, r1, shape, circle, ellipse, stroke, dot, shine, group, clipped, inside, tubeD, blobD, ellipseD, attrs } = require('./svg');
+// Every figure is built in explicit layers, always painted in this order:
+//   tail -> rear (far limbs, neck behind body) -> body -> detail (belly, spots, clipped inside body)
+//   -> held (props in the hands) -> front (near limbs) -> head (frill, horns, head) -> face
+// Rules: every part is ONE closed, white-filled path; details that must end on an edge are clipped
+// inside their part (inside()); hidden ends (horn bases, leg tops, tail roots) sit under the part in front.
+const { STROKE, DETAIL, r1, attrs, shape, circle, ellipse, stroke, dot, shine, group, inside, tubeD, blobD, ellipseD } = require('./svg');
 
-const HALO = 26; // white gap around figures, page units
+const ORDER = ['tail', 'rear', 'body', 'detail', 'held', 'front', 'head', 'face'];
 
 class Figure {
   constructor(s, boxes) {
     this.s = s;
-    this.w = STROKE / s;          // outline
-    this.d = DETAIL / s;          // inner detail
-    this.f = (DETAIL * 0.8) / s;  // fine detail
-    this.parts = [];
+    this.w = STROKE / s; this.d = DETAIL / s; this.f = (DETAIL * 0.8) / s;
+    this.layers = Object.fromEntries(ORDER.map((k) => [k, []]));
     this.sil = [];
-    this.boxes = boxes;           // local part boxes [x0, y0, x1, y1] (head, body, tail...)
+    this.boxes = boxes; // local [x0, y0, x1, y1] per region, for prop layout
   }
-  part(d, w = this.w) { this.sil.push(d); this.parts.push(shape(d, w)); return d; }
-  tube(pts, widths, w = this.w) { return this.part(tubeD(pts, widths), w); }
-  add(...svg) { this.parts.push(...svg); }
-  gap(d) { this.sil.push(d); }
+  part(layer, d, w = this.w) { this.sil.push(d); this.layers[layer].push(shape(d, w)); return d; }
+  tube(layer, pts, widths, w = this.w) { return this.part(layer, tubeD(pts, widths), w); }
+  add(layer, ...svg) { this.layers[layer].push(...svg); }
+  gap(d) { this.sil.push(d); } // fills a pocket in the occlusion mask without drawing anything
   render({ x, y, flip = false }) {
     const s = this.s;
     const t = `translate(${r1(x)} ${r1(y)}) scale(${flip ? -s : s} ${s}) translate(-500 -1000)`;
-    const halo = this.sil.map((d) => `<path ${attrs({ d, fill: '#fff', stroke: '#fff', 'stroke-width': r1((HALO * 2) / s), 'stroke-linejoin': 'round' })}/>`).join('');
     const X = (lx) => x + (flip ? -1 : 1) * (lx - 500) * s, Y = (ly) => y + (ly - 1000) * s;
     const boxes = this.boxes.map(([a, b, c, d]) => ({ x0: Math.min(X(a), X(c)), x1: Math.max(X(a), X(c)), y0: Y(b), y1: Y(d) }));
     const box = { x0: Math.min(...boxes.map((b) => b.x0)), x1: Math.max(...boxes.map((b) => b.x1)), y0: Math.min(...boxes.map((b) => b.y0)), y1: Math.max(...boxes.map((b) => b.y1)) };
-    return { svg: group([group(halo), group(this.parts)], t), boxes, box };
+    const silhouette = group(this.sil.map((d) => `<path ${attrs({ d, fill: '#000', stroke: '#000', 'stroke-width': r1(this.w), 'stroke-linejoin': 'round' })}/>`), t);
+    const svg = group(ORDER.map((k) => `<g data-layer="${k}">${this.layers[k].join('')}</g>`), t);
+    return { svg, silhouette, boxes, box };
   }
 }
 
-// ---------- shared features ----------
+// ---------- shared anatomy ----------
 function eye(F, cx, cy, rx, ry, { look = [0.25, 0.15], closed = false, lashes = false } = {}) {
-  if (closed) return F.add(stroke(`M${cx - rx} ${cy + ry * 0.15} Q${cx} ${cy - ry * 0.95} ${cx + rx} ${cy + ry * 0.15}`, F.w));
+  if (closed) return F.add('face', stroke(`M${cx - rx} ${cy + ry * 0.15} Q${cx} ${cy - ry * 0.95} ${cx + rx} ${cy + ry * 0.15}`, F.w));
   const px = cx + rx * look[0], py = cy + ry * look[1];
-  F.add(ellipse(cx, cy, rx, ry, F.w), dot(px, py, rx * 0.56), shine(px + rx * 0.2, py - ry * 0.22, rx * 0.22));
-  if (lashes) F.add(stroke(`M${cx + rx * 0.45} ${cy - ry * 0.88} l${rx * 0.2} ${-ry * 0.4} M${cx + rx * 0.82} ${cy - ry * 0.58} l${rx * 0.38} ${-ry * 0.28}`, F.d));
+  F.add('face', ellipse(cx, cy, rx, ry, F.w), dot(px, py, rx * 0.56), shine(px + rx * 0.2, py - ry * 0.22, rx * 0.22));
+  if (lashes) F.add('face', stroke(`M${cx + rx * 0.45} ${cy - ry * 0.88} l${rx * 0.2} ${-ry * 0.4} M${cx + rx * 0.82} ${cy - ry * 0.58} l${rx * 0.38} ${-ry * 0.28}`, F.d));
 }
-function bellyStripes(ys, x0, x1, bow, F) {
-  return ys.map((y) => stroke(`M${x0} ${y} Q${(x0 + x1) / 2} ${y + bow} ${x1} ${y}`, F.d)).join('');
-}
-function toeNails(F, pts, r) {
-  F.add(...pts.map(([x, y]) => shape(`M${x - r} ${y} A${r} ${r} 0 0 1 ${x + r} ${y} Z`, F.f)));
-}
+const stripeLines = (ys, x0, x1, bow, w) => ys.map((y) => stroke(`M${x0} ${y} Q${(x0 + x1) / 2} ${y + bow} ${x1} ${y}`, w)).join('');
 const shift = (d, dx, dy) => d.replace(/(-?\d+(?:\.\d+)?) (-?\d+(?:\.\d+)?)/g, (_, a, b) => `${r1(+a + dx)} ${r1(+b + dy)}`);
 
+// A small mitten hand with two rounded fingers, wrist at (x, y), pointing at angle deg (0 = up).
+function handD(x, y, deg, k = 1) {
+  const pts = [[-26, 6], [-32, -20], [-26, -44], [-12, -52], [-4, -66], [14, -64], [14, -48], [18, -60], [38, -58], [36, -40], [36, -20], [30, 0], [22, 10], [10, 20], [-20, 20]];
+  const a = (deg * Math.PI) / 180, c = Math.cos(a), s = Math.sin(a);
+  const p = pts.map(([px, py]) => [x + (px * c - py * s) * k, y + (px * s + py * c) * k]);
+  const P = (i) => `${r1(p[i][0])} ${r1(p[i][1])}`;
+  return `M${P(0)} C${P(1)} ${P(2)} ${P(3)} C${P(4)} ${P(5)} ${P(6)} C${P(7)} ${P(8)} ${P(9)} C${P(10)} ${P(11)} ${P(12)} C${P(13)} ${P(14)} ${P(0)} Z`;
+}
+
+// Natural sauropod leg: optional thigh bulge on top, gentle taper to the ankle, flared rounded foot.
+function naturalLegD(cx, top, wTop, wAnkle, wFoot, bulge = 0, ground = 1000) {
+  const L = cx - wTop / 2, R = cx + wTop / 2, aL = cx - wAnkle / 2, aR = cx + wAnkle / 2, fL = cx - wFoot / 2, fR = cx + wFoot / 2;
+  const g = ground, ay = g - 100;
+  return `M${r1(L)} ${top} C${r1(L)} ${top - bulge} ${r1(R)} ${top - bulge} ${r1(R)} ${top} ` +
+    `C${r1(R + 8)} ${top + 100} ${r1(aR)} ${ay - 40} ${r1(aR)} ${ay} C${r1(aR)} ${ay + 35} ${r1(fR)} ${ay + 50} ${r1(fR)} ${g - 28} ` +
+    `Q${r1(fR)} ${g} ${r1(fR - 28)} ${g} L${r1(fL + 28)} ${g} Q${r1(fL)} ${g} ${r1(fL)} ${g - 28} ` +
+    `C${r1(fL)} ${ay + 50} ${r1(aL)} ${ay + 35} ${r1(aL)} ${ay} C${r1(aL)} ${ay - 40} ${r1(L - 8)} ${top + 100} ${r1(L)} ${top} Z`;
+}
+function toeNails(F, layer, legD, cx, wFoot, ground = 1000, n = 3) {
+  const r = 13, gap = (wFoot - 50) / (n - 1), nails = [];
+  for (let i = 0; i < n; i++) { const x = cx - (wFoot - 50) / 2 + i * gap; nails.push(shape(`M${r1(x - r)} ${ground} A${r} ${r} 0 0 1 ${r1(x + r)} ${ground} Z`, F.f)); }
+  F.add(layer, inside(legD, nails, F.w));
+}
+
 // =====================================================================
-// T-REX: big round head, pear body, thick tail resting low, chunky legs, tiny arms.
-//   mood: 'happy' (open smile) | 'laugh' (closed eye, open smile) | 'grin' (closed smile)
-//   arm: 'wave' | 'rest'; spots: 0..6
+// T-REX: big round head, pear body, tail resting on the ground, chunky legs with toes, tiny arms.
+//   mood: 'happy' | 'laugh' | 'grin'; arm: 'wave' | 'rest'; spots: 0..6
 // =====================================================================
 function trex(o) {
   const { rng, mood = 'happy', arm = 'wave', spots = 5, s = 1 } = o;
-  const F = new Figure(s, [[460, 110, 960, 420], [270, 320, 720, 920], [150, 640, 760, 1000], [20, 560, 400, 860], [560, 400, 860, 660]]);
-  const lift = rng ? rng.range(-25, 25) : 0;
+  const F = new Figure(s, [[460, 110, 960, 430], [270, 330, 720, 920], [360, 590, 820, 1000], [20, 620, 420, 900], [560, 470, 860, 650]]);
+  const lift = rng ? rng.range(-20, 20) : 0;
 
-  // Tail: thick at the hip, resting low, tapering to a rounded tip
-  F.tube([[380, 650], [255, 715 + lift * 0.3], [145, 760 + lift * 0.6], [48, 752 + lift]], [190, 132, 74, 22]);
-  // Legs (single closed path: thigh, shin, foot with rounded toes)
-  const leg = `M410 700 C392 790 420 850 446 884 L440 958 Q440 1000 480 1000 L606 1000 C650 1000 676 968 652 944 C626 924 578 916 556 884 C602 820 590 722 560 692 C520 652 432 652 410 700 Z`;
-  F.part(shift(leg, 78, -22));
-  toeNails(F, [[616, 986], [645, 978]].map(([a, b]) => [a + 78, b - 22]), 13);
-  // Gap fillers so background lines never show between the legs or under the tail
-  F.gap(`M300 760 L700 760 L720 980 L320 990 Z`);
-  F.gap(`M150 800 L330 720 L330 990 L250 990 Z`);
-  // Far arm (tiny, mostly hidden by the body)
-  F.tube([[540, 585], [612, 612], [650, 598]], [44, 36, 30]);
-  // Body
-  const body = `M285 470 C275 350 480 318 578 400 C685 490 708 700 628 826 C562 912 368 912 302 832 C246 760 285 600 285 470 Z`;
-  F.part(body);
-  // Belly and back spots, clipped inside the body
-  const belly = `M488 430 C600 450 668 600 640 760 C620 860 500 900 432 850 C492 730 505 560 488 430 Z`;
-  const spotSet = [[380, 470, 30], [338, 580, 24], [400, 660, 20], [330, 720, 22], [420, 392, 20], [360, 800, 18]].slice(0, spots);
-  F.add(inside(body, [shape(belly, F.d), clipped(belly, bellyStripes([520, 590, 660, 730, 800], 400, 700, 16, F)),
+  // Tail: thick at the hip, sweeping down to rest on the ground
+  F.tube('tail', [[360, 660], [245, 760], [140, 836 + lift * 0.4], [46, 846 + lift]], [200, 150, 92, 26]);
+
+  // Legs: one closed path each (thigh, shin, foot); toe lines are clipped inside the foot
+  // Round drumstick thigh narrowing to a slim ankle, then a long flat foot (toes on the near foot only).
+  const leg = `M372 720 C365 630 460 600 520 610 C590 622 625 690 612 760 C600 815 570 845 552 870 C604 880 684 890 716 918 C744 946 738 1000 704 1000 L452 1000 C420 1000 414 966 432 944 C440 915 448 892 452 872 C420 850 378 800 372 720 Z`;
+  F.part('rear', shift(leg, 60, -16));
+  // Far arm, mostly hidden behind the chest
+  F.tube('rear', [[565, 560], [628, 622], [688, 600]], [52, 44, 38]);
+  F.part('rear', handD(700, 596, 60, 0.75));
+
+  // Body, belly with stripes, back spots (all clipped inside the body outline)
+  const body = `M300 480 C285 360 470 320 580 395 C690 470 715 690 640 815 C580 905 380 912 315 835 C255 765 300 610 300 480 Z`;
+  F.part('body', body);
+  const belly = `M492 440 C604 460 672 610 644 765 C624 862 504 902 436 852 C496 732 509 562 492 440 Z`;
+  const spotSet = [[380, 480, 30], [338, 590, 24], [400, 668, 20], [330, 730, 22], [425, 400, 20], [365, 810, 18]].slice(0, spots);
+  F.add('detail', inside(body, [shape(belly, F.d), inside(belly, stripeLines([525, 595, 665, 735, 805], 400, 700, 16, F.d), F.d),
     ...spotSet.map(([x, y, r]) => ellipse(x, y, r * 1.3, r, F.d, -20))], F.w));
-  // Near leg
-  F.part(leg);
-  toeNails(F, [[585, 986], [616, 986], [645, 978]], 14);
+
+  // Near leg in front of the body
+  F.part('front', leg);
+  F.add('front', inside(leg, [640, 672, 704].map((x) => shape(`M${x - 14} 1000 A14 14 0 0 1 ${x + 14} 1000 Z`, F.f)), F.w));
+  // Near arm: short, at chest height, well below the jaw; mitten hand with two fingers
+  if (arm === 'wave') {
+    F.tube('front', [[588, 540], [664, 612], [734, 570]], [64, 54, 48]);
+    F.part('front', handD(742, 560, 12, 1.05));
+    F.add('front', stroke('M806 494 q20 12 22 36 M816 556 q18 8 20 28', F.d));
+  } else {
+    F.tube('front', [[588, 545], [652, 622], [716, 640]], [64, 54, 48]);
+    F.part('front', handD(728, 640, 100, 1));
+  }
+
   // Head
   const head = `M470 335 C450 200 560 118 690 118 C820 118 922 180 932 272 C940 352 880 402 782 412 C690 422 560 420 500 392 C480 377 472 358 470 335 Z`;
-  F.part(head);
+  F.part('head', head);
+  F.add('head', inside(head, [ellipse(548, 182, 24, 17, F.f, -20), ellipse(515, 250, 16, 12, F.f, -20)], F.w));
+  // Face
   if (mood === 'grin') {
-    F.add(stroke(`M716 330 Q808 382 906 308`, F.w), stroke(`M706 318 q-6 14 6 24`, F.d));
+    F.add('face', stroke(`M716 332 Q808 382 906 310`, F.w));
   } else {
-    const mouth = `M700 318 C770 332 862 320 908 298 C905 365 846 400 782 400 C730 400 703 362 700 318 Z`;
-    F.add(shape(mouth, F.d), clipped(mouth, ellipse(808, 408, 62, 38, F.d)));
-    F.add(shape(`M752 326 l13 24 l13 -23 Z`, F.f), shape(`M842 321 l12 22 l12 -24 Z`, F.f));
+    const mouth = `M705 322 C772 334 862 322 906 300 C903 362 846 396 784 396 C734 396 708 362 705 322 Z`;
+    F.add('face', shape(mouth, F.d), inside(mouth, [ellipse(808, 404, 62, 38, F.d), shape('M752 320 l14 26 l14 -26 Z', F.f), shape('M842 316 l13 24 l13 -26 Z', F.f)], F.d));
   }
-  const closedEye = mood === 'laugh';
-  eye(F, 645, 232, 46, 56, { closed: closedEye });
-  if (!closedEye) F.add(stroke(`M596 158 Q645 134 694 160`, F.d));
-  F.add(dot(892, 236, 7), dot(914, 252, 6), circle(606, 334, 28, F.f));
-  F.add(inside(head, [ellipse(548, 182, 24, 17, F.f, -20), ellipse(515, 248, 16, 12, F.f, -20)], F.w));
-  // Near arm, drawn last so the head never hides it
-  if (arm === 'wave') {
-    F.tube([[572, 540], [662, 566], [722, 492]], [56, 46, 40]);
-    F.add(ellipse(718, 456, 14, 24, F.d, -10), ellipse(744, 470, 14, 24, F.d, 35));
-    F.add(stroke(`M772 430 q20 -8 32 -28 M786 474 q24 4 42 -8`, F.d));
-  } else {
-    F.tube([[572, 545], [646, 585], [688, 628]], [56, 46, 40]);
-    F.add(ellipse(700, 650, 13, 20, F.d, -30));
-  }
+  eye(F, 650, 232, 46, 56, { closed: mood === 'laugh' });
+  if (mood !== 'laugh') F.add('face', stroke(`M600 158 Q650 134 698 160`, F.d));
+  F.add('face', dot(892, 236, 7), dot(914, 252, 6), circle(612, 336, 28, F.f));
   return F.render(o);
 }
 
 // =====================================================================
-// TRICERATOPS sitting like a child: legs stretched forward, front feet holding a snack.
-//   hold: 'sandwich' | 'none'; mood: 'happy' | 'laugh'
+// TRICERATOPS sitting like a child: hind legs stretched forward (soles facing you),
+// front feet holding a sandwich. mood: 'happy' | 'laugh'
 // =====================================================================
 function triceratopsSitting(o) {
-  const { mood = 'happy', hold = 'sandwich', s = 1 } = o;
-  const F = new Figure(s, [[330, 60, 980, 470], [290, 380, 720, 950], [380, 740, 790, 990], [40, 780, 380, 960], [640, 440, 890, 690]]);
-  // Tail
-  F.tube([[360, 860], [250, 892], [140, 888], [55, 850]], [160, 112, 64, 20]);
-  // Frill: scalloped fan behind the head, spots clipped inside
-  const fx = 548, fy = 330, fr = 210, a0 = Math.PI * 0.62, a1 = Math.PI * 2.08, n = 11;
+  const { mood = 'happy', s = 1 } = o;
+  const F = new Figure(s, [[330, 60, 990, 470], [290, 380, 720, 950], [330, 740, 840, 990], [40, 820, 420, 960], [600, 480, 900, 720]]);
+  // Tail resting on the ground behind
+  F.tube('tail', [[400, 884], [280, 918], [160, 914], [62, 880]], [150, 110, 64, 22]);
+
+  // Far hind leg: shin, thigh over it (the overlap reads as the knee), sole with toe beans
+  F.tube('rear', [[500, 836], [630, 848], [712, 846]], [112, 98, 90]);
+  F.part('rear', ellipseD(492, 814, 96, 74, -10));
+  F.add('rear', circle(724, 776, 15, F.d), circle(750, 768, 15, F.d), circle(776, 778, 15, F.d));
+  F.gap(ellipseD(750, 776, 46, 22));
+  F.part('rear', ellipseD(750, 836, 50, 66, -6));
+  F.add('rear', circle(751, 852, 20, F.d));
+  // Far front leg reaching the sandwich
+  F.tube('rear', [[600, 610], [662, 642], [716, 626]], [56, 48, 42]);
+
+  // Body, belly stripes, back spots
+  const body = `M340 520 C340 400 565 380 630 480 C708 600 708 800 618 882 C528 952 362 952 304 872 C254 792 310 650 340 520 Z`;
+  F.part('body', body);
+  const belly = `M508 498 C612 518 676 642 654 776 C638 872 552 914 474 894 C526 772 538 612 508 498 Z`;
+  F.add('detail', inside(body, [shape(belly, F.d), inside(belly, stripeLines([572, 642, 712, 782, 852], 440, 710, 14, F.d), F.d),
+    ellipse(394, 566, 30, 24, F.d, -25), ellipse(360, 660, 26, 20, F.d, -25), ellipse(398, 752, 24, 18, F.d, -25)], F.w));
+
+  // Sandwich held between both front feet
+  const sx = 800, sy = 586;
+  const bread = `M${sx - 100} ${sy + 70} L${sx + 30} ${sy - 80} C${sx + 58} ${sy - 104} ${sx + 96} ${sy - 72} ${sx + 82} ${sy - 46} L${sx - 4} ${sy + 88} Z`;
+  F.part('held', `M${sx - 90} ${sy + 92} L${sx - 102} ${sy + 70} L${sx - 4} ${sy + 88} L${sx + 82} ${sy - 46} L${sx + 96} ${sy - 24} L${sx + 6} ${sy + 110} Z`, F.d);
+  F.part('held', bread);
+  F.add('held', inside(bread, [stroke(`M${sx - 96} ${sy + 52} q30 4 40 -18 q16 18 40 -2 q14 -24 38 -30 q4 -22 30 -40`, F.d), ellipse(sx - 10, sy + 4, 14, 10, F.f, -45), ellipse(sx + 30, sy - 40, 13, 9, F.f, -45)], F.w));
+
+  // Near hind leg: shin, big thigh on top of it (knee), then the sole with toe beans facing you
+  F.tube('front', [[500, 904], [640, 916], [740, 910]], [126, 110, 100]);
+  F.part('front', ellipseD(458, 872, 108, 84, -10));
+  F.add('front', circle(744, 838, 17, F.d), circle(774, 828, 17, F.d), circle(804, 840, 17, F.d));
+  F.gap(ellipseD(774, 836, 52, 24));
+  F.part('front', ellipseD(774, 904, 60, 78, -6));
+  F.add('front', circle(775, 922, 24, F.d));
+  // Near front leg + hand gripping the bottom corner of the sandwich
+  F.tube('front', [[588, 652], [668, 688], [736, 662]], [62, 52, 46]);
+  F.part('front', handD(744, 650, 40, 0.95));
+
+  // Frill (scalloped, behind the head), horns (bases hidden under the head), head, beak
+  const fx = 548, fy = 330, fr = 205, a0 = Math.PI * 0.62, a1 = Math.PI * 2.08, n = 11;
   let frill = '';
   for (let i = 0; i <= n; i++) {
     const a = a0 + (i / n) * (a1 - a0), x = fx + fr * Math.cos(a), y = fy + fr * Math.sin(a);
     if (!i) frill += `M${r1(x)} ${r1(y)}`;
-    else {
-      const am = a0 + ((i - 0.5) / n) * (a1 - a0);
-      frill += ` Q${r1(fx + (fr + 54) * Math.cos(am))} ${r1(fy + (fr + 54) * Math.sin(am))} ${r1(x)} ${r1(y)}`;
-    }
+    else { const am = a0 + ((i - 0.5) / n) * (a1 - a0); frill += ` Q${r1(fx + (fr + 54) * Math.cos(am))} ${r1(fy + (fr + 54) * Math.sin(am))} ${r1(x)} ${r1(y)}`; }
   }
   frill += ` L${fx + 60} ${fy + 60} Z`;
-  F.part(frill);
+  F.part('head', frill);
   const fspots = [];
   for (let i = 0; i < 6; i++) { const a = a0 + 0.42 + (i / 5) * (a1 - a0 - 1.05); fspots.push(circle(fx + (fr - 55) * Math.cos(a), fy + (fr - 55) * Math.sin(a), 24, F.d)); }
-  F.add(inside(frill, fspots, F.w));
-  // Far brow horn
-  F.part(`M612 228 C618 165 632 112 660 78 C672 120 672 170 660 232 Z`);
-  F.gap(`M300 800 L720 780 L740 990 L320 990 Z`);
-  // Far hind leg (stretched forward) and its foot sole
-  F.tube([[470, 820], [590, 840], [672, 832]], [150, 124, 112]);
-  F.part(ellipseD(712, 828, 52, 70, -12));
-  F.add(circle(714, 846, 22, F.d), circle(690, 786, 12, F.f), circle(716, 776, 12, F.f), circle(742, 788, 12, F.f));
-  // Body + belly/spots inside
-  const body = `M335 520 C335 400 560 380 625 480 C705 600 705 800 615 880 C525 950 360 950 302 870 C252 790 305 650 335 520 Z`;
-  F.part(body);
-  const belly = `M505 495 C610 515 672 640 650 775 C635 870 548 912 470 892 C522 770 534 610 505 495 Z`;
-  F.add(inside(body, [shape(belly, F.d), clipped(belly, bellyStripes([570, 640, 710, 780, 850], 440, 700, 14, F)),
-    ellipse(392, 560, 30, 24, F.d, -25), ellipse(360, 655, 26, 20, F.d, -25), ellipse(398, 745, 24, 18, F.d, -25)], F.w));
-  // Near hind leg + sole with toe pads
-  F.tube([[400, 872], [532, 902], [628, 902]], [176, 140, 124]);
-  F.part(ellipseD(660, 900, 58, 80, -10));
-  F.add(circle(663, 918, 25, F.d), circle(634, 850, 13, F.f), circle(663, 838, 13, F.f), circle(692, 850, 13, F.f));
-  // Arms and snack
-  if (hold === 'sandwich') {
-    F.tube([[575, 600], [650, 618], [705, 606]], [50, 42, 38]); // far arm
-    const sx = 770, sy = 560;
-    F.part(`M${sx - 112} ${sy + 62} L${sx + 40} ${sy - 96} C${sx + 72} ${sy - 122} ${sx + 112} ${sy - 86} ${sx + 96} ${sy - 56} L${sx} ${sy + 82} Z`);
-    F.part(`M${sx - 100} ${sy + 86} L${sx - 112} ${sy + 62} L${sx} ${sy + 82} L${sx + 96} ${sy - 56} L${sx + 110} ${sy - 32} L${sx + 12} ${sy + 106} Z`, F.d);
-    let lettuce = `M${sx - 108} ${sy + 70}`;
-    for (let i = 0; i < 6; i++) lettuce += ` q14 ${i % 2 ? 4 : 18} 34 -24`;
-    F.add(stroke(lettuce, F.d), ellipse(sx - 6, sy - 6, 16, 11, F.f, -45), ellipse(sx + 38, sy - 48, 14, 10, F.f, -45));
-    F.tube([[570, 650], [650, 668], [728, 628]], [58, 48, 42]); // near arm
-    F.add(ellipse(744, 612, 16, 22, F.d, 30), ellipse(758, 636, 15, 21, F.d, 50));
-  } else {
-    F.tube([[570, 650], [636, 700], [662, 760]], [58, 48, 42]);
-  }
-  // Head, beak, horns, face
+  F.add('head', inside(frill, fspots, F.w));
+  F.part('head', `M618 246 C622 178 638 122 666 86 C678 128 680 182 668 250 Z`);
+  F.part('head', `M682 240 C690 172 708 118 740 82 C752 126 750 180 736 246 Z`);
+  F.part('head', `M846 306 C852 266 870 238 894 222 C896 260 890 290 878 312 Z`);
   const head = `M520 330 C510 240 600 190 700 200 C800 210 880 262 902 330 C918 392 870 442 790 452 C700 462 600 452 550 422 C530 402 522 366 520 330 Z`;
-  F.part(head);
-  F.part(`M884 296 C944 300 976 342 965 384 C944 404 902 398 876 382 Z`);
-  F.part(`M676 222 C684 160 702 108 734 74 C746 116 744 168 728 226 Z`);
-  F.part(`M842 282 C850 246 868 222 892 210 C893 244 886 270 875 292 Z`);
-  eye(F, 722, 300, 38, 46, { closed: mood === 'laugh', look: [0.3, 0.1] });
-  if (mood !== 'laugh') F.add(stroke(`M684 244 Q722 228 760 246`, F.d));
-  if (mood === 'laugh') F.add(shape(`M790 396 C822 432 872 434 902 400 C878 404 830 406 790 396 Z`, F.d));
-  else F.add(stroke(`M792 405 Q842 432 892 402`, F.w));
-  F.add(circle(802, 362, 25, F.f), dot(926, 330, 6));
-  F.add(inside(head, [ellipse(602, 300, 18, 13, F.f, -20), ellipse(628, 382, 14, 10, F.f, -20)], F.w));
+  F.part('head', head);
+  F.add('head', inside(head, [ellipse(602, 302, 18, 13, F.f, -20), ellipse(628, 384, 14, 10, F.f, -20)], F.w));
+  F.part('head', `M884 296 C944 300 976 342 965 384 C944 404 902 398 876 382 Z`);
+  // Face
+  eye(F, 726, 302, 38, 46, { closed: mood === 'laugh', look: [0.3, 0.1] });
+  if (mood !== 'laugh') F.add('face', stroke(`M688 246 Q726 230 764 248`, F.d));
+  if (mood === 'laugh') F.add('face', shape(`M792 396 C824 432 874 434 904 400 C880 404 832 406 792 396 Z`, F.d));
+  else F.add('face', stroke(`M794 406 Q844 434 894 404`, F.w));
+  F.add('face', circle(804, 364, 25, F.f), dot(928, 330, 6));
   return F.render(o);
 }
 
 // =====================================================================
-// BRACHIOSAURUS (baby): round body, chunky legs, tall curved neck, big friendly eyes.
+// BRACHIOSAURUS (baby): oval body, natural tapered legs with thigh bulges, tall neck, big eyes.
 //   neck: 'up' | 'down'; mood: 'happy' | 'laugh'
 // =====================================================================
 function brachiosaurus(o) {
   const { mood = 'happy', neck = 'up', baby = true, s = 1 } = o;
-  const F = new Figure(s, [[650, 90, 985, 320], [580, 220, 850, 690], [195, 550, 800, 880], [280, 680, 730, 1000], [20, 660, 320, 840]]);
-  const leg = (x, top, w) => `M${x + 6} ${top} C${x} 860 ${x - 4} 936 ${x} 964 Q${x} 1000 ${x + 38} 1000 L${x + w - 38} 1000 Q${x + w} 1000 ${x + w} 964 C${x + w + 4} 936 ${x + w} 860 ${x + w - 6} ${top} Z`;
+  const F = new Figure(s, [[650, 90, 985, 320], [580, 220, 850, 690], [195, 550, 800, 880], [250, 650, 760, 1000], [20, 660, 330, 840]]);
   // Tail
-  F.tube([[300, 760], [190, 792], [100, 776], [30, 728]], [160, 108, 60, 22]);
-  // Far legs, then near legs (tops hidden under the body: no seam boxes)
-  F.part(leg(372, 700, 122)); F.part(leg(612, 690, 122));
-  F.gap(`M300 800 L740 800 L740 992 L300 992 Z`);
-  F.part(leg(292, 720, 146)); F.part(leg(560, 720, 146));
-  toeNails(F, [[326, 1000], [365, 1000], [404, 1000]], 14);
-  toeNails(F, [[594, 1000], [633, 1000], [672, 1000]], 14);
-  // Neck rises from the chest (drawn before the body so the body covers its base)
+  F.tube('tail', [[320, 740], [205, 780], [110, 770], [34, 722]], [160, 108, 60, 22]);
+  // Far legs (slightly higher: they stand further back), tops hidden under the body
+  const farHind = naturalLegD(430, 700, 150, 104, 128, 0, 986), farFront = naturalLegD(695, 700, 136, 100, 124, 0, 986);
+  F.part('rear', farHind); toeNails(F, 'rear', farHind, 430, 128, 986);
+  F.part('rear', farFront); toeNails(F, 'rear', farFront, 695, 124, 986);
+  // Neck rises from the chest, behind the body
   const neckD = neck === 'up'
-    ? tubeD([[670, 690], [700, 520], [712, 370], [752, 244]], [196, 166, 146, 134])
-    : tubeD([[640, 620], [740, 610], [820, 670], [862, 760]], [180, 150, 132, 124]);
-  F.part(neckD);
-  F.add(inside(neckD, neck === 'up'
-    ? [stroke('M560 560 Q690 584 820 556', F.d), stroke('M590 456 Q700 478 820 452', F.d), stroke('M610 356 Q712 376 830 350', F.d)]
-    : [stroke('M720 520 Q735 610 700 700', F.d), stroke('M800 560 Q805 650 770 720', F.d)], F.w));
-  // Body: a smooth wide oval, belly band and spots clipped inside
-  const body = blobD([[200, 730], [270, 612], [450, 562], [650, 574], [780, 652], [790, 758], [700, 850], [480, 872], [290, 856]]);
-  F.part(body);
-  const belly = `M270 800 C410 846 610 846 770 786 L790 890 L260 890 Z`;
-  F.add(inside(body, [shape(belly, F.d), ...[[340, 660, 30], [460, 620, 26], [580, 630, 28], [450, 728, 20], [280, 745, 18], [680, 700, 20]].map(([x, y, r]) => ellipse(x, y, r * 1.25, r, F.d, -10))], F.w));
+    ? tubeD([[670, 690], [700, 520], [712, 370], [752, 244]], [200, 168, 146, 134])
+    : tubeD([[640, 640], [740, 630], [820, 690], [862, 780]], [180, 150, 132, 124]);
+  F.part('rear', neckD);
+  F.add('rear', inside(neckD, neck === 'up'
+    ? [stroke('M560 570 Q690 594 830 566', F.d), stroke('M590 462 Q700 484 824 458', F.d), stroke('M610 360 Q712 380 834 354', F.d)]
+    : [stroke('M720 540 Q735 630 700 720', F.d), stroke('M800 580 Q805 670 770 740', F.d)], F.w));
+  // Body
+  const body = blobD([[205, 730], [272, 615], [450, 566], [650, 578], [778, 656], [788, 758], [700, 846], [480, 866], [292, 852]]);
+  F.part('body', body);
+  const belly = `M270 806 C410 850 610 850 770 790 L790 890 L260 890 Z`;
+  F.add('detail', inside(body, [shape(belly, F.d), ...[[352, 650, 30], [470, 616, 26], [585, 628, 27], [470, 722, 20], [282, 740, 17]].map(([x, y, r]) => ellipse(x, y, r * 1.25, r, F.d, -10))], F.w));
+  // Near legs in front of the body: the thigh/shoulder bulge reads as the leg joining the body
+  const nearHind = naturalLegD(340, 742, 186, 118, 150, 78), nearFront = naturalLegD(612, 748, 160, 112, 140, 56);
+  F.part('front', nearHind); toeNails(F, 'front', nearHind, 340, 150);
+  F.part('front', nearFront); toeNails(F, 'front', nearFront, 612, 140);
   // Head
   if (neck === 'up') {
     const head = `M672 232 C660 160 725 114 792 126 C832 106 885 126 892 168 C945 178 978 220 962 262 C946 302 862 314 782 304 C720 298 682 272 672 232 Z`;
-    F.part(head);
+    F.part('head', head);
     eye(F, 798, 200, baby ? 38 : 28, baby ? 46 : 34, { lashes: true, closed: mood === 'laugh' });
-    F.add(stroke(`M882 278 Q918 292 946 268`, F.w), circle(852, 256, 22, F.f), dot(945, 220, 6));
-    if (mood !== 'laugh') F.add(stroke(`M754 144 Q798 124 838 144`, F.d));
+    F.add('face', stroke(`M882 278 Q918 292 946 268`, F.w), circle(852, 256, 22, F.f), dot(945, 220, 6));
+    if (mood !== 'laugh') F.add('face', stroke(`M754 144 Q798 124 838 144`, F.d));
   } else {
     const hx = 880, hy = 780;
     const head = `M${hx - 70} ${hy - 30} C${hx - 50} ${hy - 110} ${hx + 70} ${hy - 120} ${hx + 120} ${hy - 60} C${hx + 160} ${hy - 10} ${hx + 140} ${hy + 60} ${hx + 60} ${hy + 70} C${hx - 10} ${hy + 75} ${hx - 80} ${hy + 40} ${hx - 70} ${hy - 30} Z`;
-    F.part(head);
+    F.part('head', head);
     eye(F, hx + 20, hy - 30, 32, 40, { lashes: true, look: [0.3, 0.35], closed: mood === 'laugh' });
-    F.add(stroke(`M${hx + 70} ${hy + 40} Q${hx + 105} ${hy + 50} ${hx + 130} ${hy + 25}`, F.w), circle(hx + 78, hy + 6, 18, F.f));
+    F.add('face', stroke(`M${hx + 70} ${hy + 40} Q${hx + 105} ${hy + 50} ${hx + 130} ${hy + 25}`, F.w), circle(hx + 78, hy + 6, 18, F.f));
   }
   return F.render(o);
 }
 
-module.exports = { trex, triceratopsSitting, brachiosaurus, HALO };
+module.exports = { trex, triceratopsSitting, brachiosaurus, Figure, handD, naturalLegD };

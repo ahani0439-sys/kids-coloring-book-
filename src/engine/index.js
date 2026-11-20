@@ -4,8 +4,9 @@ const sharp = require('sharp');
 const { doc, resetIds } = require('./svg');
 const { makeRng } = require('./rng');
 const { COMPOSITIONS } = require('./compositions');
+const { Scene } = require('./scene');
 
-const ENGINE_VERSION = 'svg-engine 0.1';
+const ENGINE_VERSION = 'svg-engine 0.2';
 
 function available() {
   return Object.keys(COMPOSITIONS).map(Number);
@@ -17,12 +18,17 @@ function randomSeed() {
   return Math.floor(Math.random() * 2 ** 31);
 }
 
-function generate(id, seed = randomSeed()) {
+// Draw page `id` with `seed`. Async: the occlusion mask is computed from the rendered silhouettes.
+// Returns the page SVG plus layer variants used by the automated checks.
+async function generate(id, seed = randomSeed()) {
   const c = COMPOSITIONS[id];
   if (!c) throw new Error(`No drawing has been designed for page ${id} yet.`);
   resetIds();
-  const svg = doc(c.draw(makeRng(seed)));
-  return { svg, seed, composition: id, name: c.name, engine: ENGINE_VERSION };
+  const rng = makeRng(seed);
+  const scene = new Scene(rng);
+  c.draw(scene, rng);
+  const out = await scene.render();
+  return { svg: doc(out.page), variants: out, seed, composition: id, name: c.name, engine: ENGINE_VERSION };
 }
 
 // Rasterize at print size, then force pure black/white (no gray anti-aliasing left).
