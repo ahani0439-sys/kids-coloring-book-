@@ -1,0 +1,31 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#2F6B4F">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<title>Dino Book Factory</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Fredoka:wght@500;600;700&family=Nunito:wght@400;600;700;800&display=swap">
+<link rel="stylesheet" href="/app.css">
+</head>
+<body>
+<header class="top">
+  <div class="top-inner">
+    <div class="brand"><span class="brand-mark" aria-hidden="true"></span><span>Dino Book Factory</span></div>
+    <span class="kdp-tag">KDP · 8.5 × 11 · B&amp;W</span>
+  </div>
+</header>
+<div id="banner" class="wrap"></div>
+<main id="view" class="wrap" aria-live="polite"><p class="muted">Loading…</p></main>
+<nav class="tabs" aria-label="Sections">
+  <button data-tab="overview" class="tab"><svg viewBox="0 0 24 24"><path d="M4 5h16v14H4z M4 10h16 M10 10v9"/></svg>Overview</button>
+  <button data-tab="pages" class="tab"><svg viewBox="0 0 24 24"><path d="M5 4h10l4 4v12H5z M14 4v5h5"/></svg>Pages</button>
+  <button data-tab="book" class="tab"><svg viewBox="0 0 24 24"><path d="M5 4h11a3 3 0 0 1 3 3v13H8a3 3 0 0 1-3-3z M5 17a3 3 0 0 1 3-3h11"/></svg>Book</button>
+  <button data-tab="export" class="tab"><svg viewBox="0 0 24 24"><path d="M12 4v11 M7 10l5 5 5-5 M5 20h14"/></svg>Export</button>
+</nav>
+<div id="toast" class="toast" role="status" hidden></div>
+<script src="/app.js"></script>
+</body>
+</html>

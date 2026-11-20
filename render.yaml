@@ -1,0 +1,28 @@
+# Render Blueprint: Dashboard > New > Blueprint > pick this repo (works from a phone browser).
+# The persistent disk keeps your images, approvals and PDFs across deploys (disks need a paid instance).
+services:
+  - type: web
+    name: dino-book-factory
+    runtime: node
+    plan: starter
+    branch: claude/storyforge-mobile-app-62wmq5
+    buildCommand: npm ci
+    startCommand: npm start
+    healthCheckPath: /healthz
+    disk:
+      name: book-data
+      mountPath: /var/data
+      sizeGB: 1
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: DATA_DIR
+        value: /var/data
+      - key: APP_PASSWORD
+        sync: false
+      - key: IMAGE_PROVIDER
+        value: replicate
+      - key: REPLICATE_API_TOKEN
+        sync: false
+      - key: OPENAI_API_KEY
+        sync: false
