@@ -2,6 +2,30 @@
 
 A mobile-first web app that builds an Amazon KDP paperback coloring book, *Dino Buddies Coloring Book*, from your phone. It produces two files: an 8.5" × 11" black-and-white interior PDF and a full-wrap cover PDF. Both are checked against KDP's rules before they are saved. Nothing is ever uploaded to Amazon, and nothing is deployed or purchased automatically.
 
+## Import artwork (manual hand-off, e.g. from ChatGPT)
+
+For books whose pictures you make elsewhere, for example in the ChatGPT app on your iPhone. The app never connects to ChatGPT: you save the pictures and import the files.
+
+1. **Start the book.** On the Books tab, use **Start from a template**. "Dino Pals in Space" is a 10-page story coloring book with the exact captions, scenes and character bible.
+2. **Get the prompts.** On the book's Overview, tap **Copy ChatGPT prompts** (one prompt per scene, each with the character bible and art style), or copy a single page's prompt on the Pages tab.
+3. **Name the files.** Save each picture with its scene number: `01.png` … `10.png`. Names like `scene_01.png` or `page 3.jpg` also work, and the Files app lets you rename. Pictures chosen from Photos keep camera names (`IMG_1234`); the app deliberately doesn't guess those, so you assign them yourself.
+4. **Import.** Tap **Import artwork** and pick several PNG/JPEG files at once. A preview then shows, for each file:
+   - a thumbnail and the filename;
+   - the matched scene with its caption;
+   - duplicates (a second file for the same scene stays unassigned until you choose);
+   - quality notes.
+
+   Correct any assignment with the dropdowns, or put the unassigned files into empty scenes in order.
+5. **Replacements need confirmation.** Replacing a picture that's in review needs one confirmation. Replacing an approved picture needs a second, explicit confirmation, and removes that approval. Replaced pictures are kept in the history and the `rejected/` folder.
+6. **Review and approve.** Imported pictures wait for review. You can approve, reject, or replace by re-uploading (two taps).
+7. **Approve the book details** on the Book tab (title, subtitle, author, description, keywords). Once every page and the book details are approved, the interior and cover PDFs are built and checked automatically.
+
+**Originals vs print versions.** Each original file is kept unchanged, and you can download it from its page card. A separate print-layout version is made for the PDF: black and white, sized to the picture area above the caption at 300 pixels per inch.
+
+**Honest resolution.** The quality notes give the original picture's *effective* DPI at print size. A ChatGPT-size image (1024 × 1536) fills the story picture area at about **176 DPI**. The app enlarges it to 300 PPI for the PDF, but enlarging never adds real detail, so the final validation shows a separate "original detail" warning for those pages. Images of about 2,200 × 2,600 px or more give true 300 DPI. Color, gray shading, large dark areas and near-empty images are flagged too.
+
+**Template page count.** 10 illustrations make 24 printed pages: title, copyright, "This Book Belongs To" and its blank back, then 10 pictures, each with a blank back. That's KDP's minimum, so the template keeps the "belongs to" page; without it the book would have 22 pages, below the limit.
+
 ## Generate Full Book (automatic generation from the app)
 
 Enter a book idea, pick the book type (coloring, or story coloring with one sentence per page), the trim size and the illustration count, then tap **Generate Full Book** on the book's Overview. Each run:

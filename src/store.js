@@ -33,7 +33,8 @@ class BookStore {
   constructor(id) {
     this.id = id;
     const root = path.join(DATA_DIR, 'books', id);
-    this.DIRS = { root, images: path.join(root, 'images'), rejected: path.join(root, 'rejected'), exports: path.join(root, 'exports'), cover: path.join(root, 'cover') };
+    // originals/ keeps every imported or uploaded file exactly as received; images/ holds the print-layout versions.
+    this.DIRS = { root, images: path.join(root, 'images'), originals: path.join(root, 'originals'), rejected: path.join(root, 'rejected'), exports: path.join(root, 'exports'), cover: path.join(root, 'cover') };
     this.stateFile = path.join(root, 'state.json');
     this.state = undefined;
   }
@@ -153,6 +154,19 @@ const library = {
     storage.writeFile(bs.stateFile, JSON.stringify(st, null, 2));
     cache.set(id, bs);
     this.syncEntry(bs);
+    return bs;
+  },
+  // New book from a template (never touches existing books).
+  fromTemplate(templateId) {
+    const t = require('./templates').stateFromTemplate(templateId);
+    if (!t) throw new Error('Unknown template');
+    const bs = this.create({ title: t.book.title, theme: t.book.theme, illustrationCount: t.illustrations.length, includeIntro: t.book.includeIntro, trim: t.book.trim, paper: t.book.paper, type: t.book.type });
+    const st = bs.load();
+    Object.assign(st.book, t.book);
+    st.illustrations = t.illustrations;
+    st.ai = t.ai;
+    st.decisions.push({ at: now(), action: 'created from template', template: templateId });
+    bs.save();
     return bs;
   },
   rename(id, title) {

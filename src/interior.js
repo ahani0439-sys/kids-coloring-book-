@@ -1,6 +1,6 @@
 // Builds the 8.5 x 11 no-bleed interior PDF from the page plan.
 const { PDFDocument, rgb } = require('pdf-lib');
-const { PT, bookSpecs } = require('./kdp');
+const { PT, bookSpecs, CAPTION_BAND } = require('./kdp');
 const storage = require('./storage');
 const { embedFonts, drawTextBlock, embedLineArt, drawXObject } = require('./pdfkit');
 const store = require('./store');
@@ -64,7 +64,7 @@ async function buildInterior(state, { mode = 'proof', guides = false } = {}) {
       const file = B.approvedImageFile(il);
       // Story books: a caption band at the bottom of the safe area; the picture uses the space above it.
       const caption = book.type === 'story' && il.caption ? il.caption : '';
-      const capH = caption ? 1.3 : 0;
+      const capH = caption ? CAPTION_BAND : 0;
       const artArea = { x: safe.x, y: safe.y + capH, w: safe.w, h: safe.h - capH };
       if (caption) drawTextBlock(page, caption, { font: f.display, size: 20, x0: x0 + 0.1 * PT, x1: x1 - 0.1 * PT, topY: bottom + (capH - 0.15) * PT, lineGap: 1.2, boxes: entry.boxes, label: 'caption' });
       if (file) {

@@ -29,10 +29,12 @@ function canGenerate(bs, il) {
   return providerStatus().configured;
 }
 // Print size for uploads: the book's art box at 300 DPI (depends on trim size and margins).
+// Print-layout size for a page image: the book's picture area (art box minus any caption band) at 300 PPI.
+// Smaller originals are enlarged to this pixel count; enlarging does not add real detail.
 function targetFor(bs) {
   const st = bs.load();
-  const { interior } = bookSpecs(st.book, st.illustrations.length);
-  return { w: Math.ceil(interior.artBox.w * 300), h: Math.ceil(interior.artBox.h * 300) };
+  const a = require('./kdp').artAreaFor(st.book, st.illustrations.length);
+  return { w: Math.ceil(a.w * 300), h: Math.ceil(a.h * 300) };
 }
 
 async function generateWithReplicate(prompt) {

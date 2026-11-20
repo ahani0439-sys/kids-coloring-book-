@@ -1,6 +1,6 @@
 {
   "name": "kdp-coloring-book-factory",
-  "version": "0.4.0",
+  "version": "0.5.0",
   "private": true,
   "description": "Mobile-first Amazon KDP coloring book factory: interior + full-wrap cover templates, review gallery, validated print-ready PDF export.",
   "main": "server.js",
@@ -9,7 +9,7 @@
   },
   "scripts": {
     "start": "node server.js",
-    "test": "node test/smoke.js && node test/storage-race.js && node test/migration.js && node test/svg-engine.js && node test/auto-assembly.js && node test/persistence.js && node test/generation.js && node test/ai-generation.js && node test/books.js"
+    "test": "node test/smoke.js && node test/storage-race.js && node test/migration.js && node test/svg-engine.js && node test/auto-assembly.js && node test/persistence.js && node test/generation.js && node test/ai-generation.js && node test/import.js && node test/books.js"
   },
   "license": "MIT",
   "dependencies": {

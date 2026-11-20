@@ -149,4 +149,12 @@ function bookSpecs(book, illustrationCount) {
   return { interior, cover };
 }
 
-module.exports = { KDP, PT, TRIMS, PAPERS, trimOf, pageLimits, frontMatterPages, maxIllustrations, requiredGutter, buildPagePlan, computeInterior, computeCover, bookSpecs };
+// Story books reserve a caption band at the bottom of the art box; the picture uses the space above it.
+const CAPTION_BAND = 1.3; // inches
+function artAreaFor(book, illustrationCount) {
+  const { interior } = bookSpecs(book, illustrationCount);
+  const cap = book.type === 'story' ? CAPTION_BAND : 0;
+  return { w: interior.artBox.w, h: +(interior.artBox.h - cap).toFixed(4), captionBand: cap };
+}
+
+module.exports = { CAPTION_BAND, artAreaFor, KDP, PT, TRIMS, PAPERS, trimOf, pageLimits, frontMatterPages, maxIllustrations, requiredGutter, buildPagePlan, computeInterior, computeCover, bookSpecs };

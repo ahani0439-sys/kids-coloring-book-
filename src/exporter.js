@@ -24,6 +24,7 @@ function preflightFinal(state) {
   for (const issue of interior.issues) problems.push(issue);
   if (!state.book.author.trim()) problems.push('Author name is empty (Book tab).');
   if (!state.book.title.trim()) problems.push('Title is empty.');
+  if (state.book.requireMetadataApproval && !state.book.metadataApprovedAt) problems.push('Approve the book details (title, subtitle, author, description, keywords) on the Book tab.');
   return problems;
 }
 

@@ -106,9 +106,20 @@ async function validateInterior(bytes, manifest, state) {
   // Images: resolution and approval state.
   const placed = ill.filter((p) => p.image);
   const lowDpi = placed.filter((p) => p.image.dpi < KDP.minDpi).map((p) => `#${p.illustration} ${p.image.dpi} dpi`);
-  r.check(!lowDpi.length, 'image-dpi', `Every placed illustration is at least ${KDP.minDpi} DPI`, lowDpi.join('; ') || (placed.length ? `${placed.length} images, lowest ${Math.min(...placed.map((p) => p.image.dpi))} dpi` : 'No images placed yet'));
-  const upscaled = placed.filter((p) => p.image.sourcePx && p.image.sourcePx.w * 2 < p.image.pxW).map((p) => `#${p.illustration}`);
-  if (upscaled.length) r.warn('image-upscaled', 'Some illustrations were upscaled more than 2x from the generator output', `${upscaled.join(', ')}. Check line sharpness in the proof.`);
+  r.check(!lowDpi.length, 'image-dpi', `Pixel density in the PDF is at least ${KDP.minDpi} PPI on every page (this counts enlarged pixels; see the original-detail check)`, lowDpi.join('; ') || (placed.length ? `${placed.length} images, lowest ${Math.min(...placed.map((p) => p.image.dpi))} PPI` : 'No images placed yet'));
+  // Honest resolution: how many ORIGINAL pixels per printed inch. Enlarging to 300 PPI does not add detail.
+  const soft = placed.filter((p) => p.image.sourcePx).map((p) => {
+    const sc = Math.min(p.image.w / p.image.sourcePx.w, p.image.h / p.image.sourcePx.h);
+    return { n: p.illustration, eff: Math.floor(1 / sc) };
+  }).filter((x) => x.eff < KDP.minDpi);
+  if (soft.length) r.warn('source-detail', `Original artwork is below ${KDP.minDpi} DPI at print size on ${soft.length} page(s); these were enlarged, which does not add real detail`, soft.map((x) => `#${x.n} ~${x.eff} DPI`).join(', ') + '. Check line sharpness in a printed proof.');
+  // Story books: the caption must not overlap the picture.
+  const overlaps = manifest.pages.filter((pg) => {
+    const cap = pg.boxes.find((b) => b.label === 'caption'), img = pg.boxes.find((b) => b.kind === 'image');
+    return cap && img && cap.x < img.x + img.w && cap.x + cap.w > img.x && cap.y < img.y + img.h && cap.y + cap.h > img.y;
+  }).map((pg) => pg.n);
+  const captioned = manifest.pages.filter((pg) => pg.boxes.some((b) => b.label === 'caption')).length;
+  if (captioned) r.check(!overlaps.length, 'caption-layout', 'Captions sit below the picture without overlapping it, inside the margins', overlaps.length ? `Overlap on page(s) ${overlaps.join(', ')}` : `${captioned} captioned page(s)`);
   const pdfImageCount = ill.reduce((s, p) => s + pageImageCount(pages[p.n - 1]), 0);
   r.check(pdfImageCount === placed.length, 'image-count-pdf', 'Images found in the PDF match the placed illustrations', `${pdfImageCount} in PDF, ${placed.length} placed`);
 

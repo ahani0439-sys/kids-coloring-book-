@@ -15,6 +15,8 @@ const aiSettings = require('./src/ai/settings');
 const aiJobs = require('./src/ai/jobs');
 const aiHardware = require('./src/ai/hardware');
 const { BOOK_TYPES } = require('./src/content');
+const templates = require('./src/templates');
+const importer = require('./src/importer');
 
 if (config.production && !config.password) {
   console.error('Refusing to start: set APP_PASSWORD in the environment (Render > your service > Environment).');
@@ -92,6 +94,7 @@ function publicState(bs) {
     coverArt: s.coverArt,
     autoExport: s.autoExport || null,
     exportJob: s.exportJob || null,
+    importJob: s.importJob || null,
     genJob: s.genJob ? { ...s.genJob, running: aiJobs.isRunning(bs.id), log: (s.genJob.log || []).slice(-12) } : null,
     ai: s.ai ? { spec: s.ai.spec || null, characterBible: s.ai.characterBible || null, styleGuide: s.ai.styleGuide || null, planSource: s.ai.plan?.source || null, plannedAt: s.ai.plannedAt || null } : null,
     migratedFrom: s.migratedFrom || null,
@@ -104,7 +107,7 @@ function publicState(bs) {
   };
 }
 function libraryState() {
-  return { books: library.summaries(), defaultBookId: library.defaultId(), migratedFrom: library.load().migratedFrom || null, trims: TRIMS, papers: PAPERS, bookTypes: BOOK_TYPES, config: publicConfig(), storage: storage.status() };
+  return { books: library.summaries(), defaultBookId: library.defaultId(), migratedFrom: library.load().migratedFrom || null, trims: TRIMS, papers: PAPERS, bookTypes: BOOK_TYPES, templates: templates.listTemplates(), config: publicConfig(), storage: storage.status() };
 }
 
 // ---------- library: create, list, rename, duplicate, archive, open ----------
@@ -131,6 +134,12 @@ app.post('/api/books', (req, res) => {
   library.open(bs.id);
   res.status(201).json({ bookId: bs.id, library: libraryState(), state: publicState(bs) });
 });
+app.post('/api/books/from-template', wrap(async (req, res) => {
+  let bs;
+  try { bs = library.fromTemplate(String(req.body?.templateId || '')); } catch (e) { return res.status(404).json({ error: e.message }); }
+  library.open(bs.id);
+  res.status(201).json({ bookId: bs.id, library: libraryState(), state: publicState(bs) });
+}));
 app.put('/api/books/:bookId/title', wrap(async (req, res) => { library.rename(req.params.bookId, req.body?.title); res.json(libraryState()); }));
 app.post('/api/books/:bookId/duplicate', wrap(async (req, res) => {
   const bs = await library.duplicate(req.params.bookId, req.body?.title);
@@ -165,6 +174,7 @@ book.put('/book', wrap(async (req, res) => {
   const bs = req.bs, s = bs.load();
   const b = req.body || {};
   const str = (v, max) => String(v ?? '').slice(0, max);
+  const metaBefore = JSON.stringify([s.book.title, s.book.subtitle, s.book.author, s.book.description, s.book.keywords, s.book.publisherNote, s.book.year, s.book.isbn]);
   if ('title' in b && str(b.title, 200) && str(b.title, 200) !== s.book.title) { s.book.title = str(b.title, 200); s.book.titleFromUser = true; }
   if ('subtitle' in b) s.book.subtitle = str(b.subtitle, 200);
   if ('theme' in b) s.book.theme = str(b.theme, 120);
@@ -181,6 +191,9 @@ book.put('/book', wrap(async (req, res) => {
   if (PAPERS[b.paper]) s.book.paper = b.paper;
   if (b.margins) for (const k of ['inside', 'outside', 'top', 'bottom']) if (k in b.margins) s.book.margins[k] = Math.max(0, Math.min(2, Number(b.margins[k]) || 0));
   if (b.cover) for (const k of ['background', 'accent']) if (/^#[0-9a-f]{6}$/i.test(b.cover[k] || '')) s.book.cover[k] = b.cover[k];
+  if (s.book.metadataApprovedAt && JSON.stringify([s.book.title, s.book.subtitle, s.book.author, s.book.description, s.book.keywords, s.book.publisherNote, s.book.year, s.book.isbn]) !== metaBefore) {
+    s.book.metadataApprovedAt = null; // edited after approval: approve again
+  }
   if ('illustrationCount' in b && Number(b.illustrationCount) !== s.illustrations.length) {
     const n = Math.floor(Number(b.illustrationCount));
     const { interior } = bookSpecs(s.book, n || 1);
@@ -189,6 +202,118 @@ book.put('/book', wrap(async (req, res) => {
   }
   bs.save();
   res.json(publicState(bs));
+}));
+
+// Book details approval (title, subtitle, author, description, keywords), required by template books.
+book.post('/metadata/approve', (req, res) => {
+  const bs = req.bs, s = bs.load();
+  if (req.body?.confirm !== true) return res.status(409).json({ error: 'Confirm to approve the book details.', needsConfirm: true });
+  if (req.body?.approved === false) { s.book.metadataApprovedAt = null; bs.save(); return res.json(publicState(bs)); }
+  const missing = [['title', s.book.title], ['subtitle', s.book.subtitle], ['author', s.book.author], ['description', s.book.description]].filter(([, v]) => !String(v || '').trim()).map(([k]) => k);
+  if (missing.length) return res.status(400).json({ error: `Fill in the ${missing.join(', ')} first.` });
+  s.book.metadataApprovedAt = new Date().toISOString();
+  bs.logDecision({ id: 0, image: null }, 'book details approved');
+  bs.save();
+  if (s.illustrations.every((i) => bs.approvedImageFile(i))) assembleIfComplete(bs);
+  res.json(publicState(bs));
+});
+
+// ---------- Artwork import (manual file handoff, e.g. pictures saved from the ChatGPT app) ----------
+const importUpload = multer({
+  storage: multer.diskStorage({ destination: (req, file, cb) => cb(null, req.importDir), filename: (req, file, cb) => cb(null, crypto.randomBytes(6).toString('hex')) }),
+  limits: { fileSize: 30 * 1024 * 1024, files: 40 },
+});
+book.post('/import/analyze', (req, res, next) => {
+  importer.cleanStaging(req.bs);
+  req.batchId = importer.newBatch(req.bs);
+  req.importDir = importer.stagingDir(req.bs, req.batchId);
+  next();
+}, importUpload.array('images', 40), wrap(async (req, res) => {
+  const bs = req.bs, s = bs.load();
+  const files = req.files || [];
+  if (!files.length) { importer.dropBatch(bs, req.batchId); return res.status(400).json({ error: 'No images received. Choose one or more PNG or JPEG files.' }); }
+  const area = importer.areaFor(bs);
+  const analyzed = [];
+  for (const f of files) {
+    const quality = await importer.analyze(fs.readFileSync(f.path), area).catch(() => ({ ok: false, error: 'This file could not be read as an image.' }));
+    analyzed.push({ fileId: f.filename, name: f.originalname, bytes: f.size, mimetype: f.mimetype, quality });
+  }
+  const usable = analyzed.filter((f) => f.quality.ok);
+  const mapping = importer.proposeMapping(usable, s.illustrations.length).concat(analyzed.filter((f) => !f.quality.ok).map((f) => ({ ...f, slot: null, how: 'unreadable' })));
+  importer.saveBatchMeta(bs, req.batchId, { createdAt: new Date().toISOString(), files: analyzed });
+  res.json({ batchId: req.batchId, area, files: mapping, slots: s.illustrations.map((il) => ({ id: il.id, caption: il.caption || il.title, status: il.status, hasImage: !!il.image })) });
+}));
+book.get('/import/:batch/thumb/:fileId', wrap(async (req, res) => {
+  const file = path.join(importer.stagingDir(req.bs, path.basename(req.params.batch)), path.basename(req.params.fileId));
+  if (!fs.existsSync(file)) return res.status(404).end();
+  res.type('image/jpeg').send(await sharp(file).flatten({ background: '#ffffff' }).resize(320, 320, { fit: 'inside' }).jpeg({ quality: 80 }).toBuffer());
+}));
+book.delete('/import/:batch', (req, res) => { importer.dropBatch(req.bs, path.basename(req.params.batch)); res.json({ ok: true }); });
+book.post('/import/:batch/commit', wrap(async (req, res) => {
+  const bs = req.bs, s = bs.load();
+  const batchId = path.basename(req.params.batch);
+  const meta = importer.batchMeta(bs, batchId);
+  if (!meta) return res.status(404).json({ error: 'This import preview has expired. Choose the images again.' });
+  if (s.importJob?.status === 'running') return res.status(409).json({ error: 'An import is already running for this book.' });
+  const b = req.body || {};
+  const assignments = (Array.isArray(b.assignments) ? b.assignments : []).map((a) => ({ fileId: String(a.fileId), slot: Number(a.slot) }));
+  if (!assignments.length) return res.status(400).json({ error: 'Assign at least one image to a scene.' });
+  const byId = new Map(meta.files.map((f) => [f.fileId, f]));
+  const problems = [];
+  const slots = new Set(), ids = new Set();
+  for (const a of assignments) {
+    const f = byId.get(a.fileId);
+    if (!f) problems.push(`Unknown file ${a.fileId}.`);
+    else if (!f.quality.ok) problems.push(`${f.name} cannot be imported: ${f.quality.error}`);
+    if (!Number.isInteger(a.slot) || a.slot < 1 || a.slot > s.illustrations.length) problems.push(`Scene ${a.slot} does not exist.`);
+    if (slots.has(a.slot)) problems.push(`Two images are assigned to scene ${a.slot}. Choose one.`);
+    if (ids.has(a.fileId)) problems.push(`${f?.name || a.fileId} is assigned twice.`);
+    slots.add(a.slot); ids.add(a.fileId);
+  }
+  if (problems.length) return res.status(400).json({ error: problems.join(' '), problems });
+  // Never overwrite silently: existing artwork needs confirmation; approved artwork needs its own confirmation.
+  const confirmReplace = new Set((b.confirmReplace || []).map(Number));
+  const confirmApproved = new Set((b.confirmReplaceApproved || []).map(Number));
+  const conflicts = [];
+  for (const a of assignments) {
+    const il = s.illustrations[a.slot - 1];
+    if (il.status === 'generating') conflicts.push({ slot: a.slot, status: il.status, reason: 'a picture is being generated for this scene' });
+    else if (il.status === 'approved' && !(confirmReplace.has(a.slot) && confirmApproved.has(a.slot))) conflicts.push({ slot: a.slot, status: 'approved', reason: 'replacing an APPROVED picture removes its approval' });
+    else if (il.image && il.status !== 'approved' && !confirmReplace.has(a.slot)) conflicts.push({ slot: a.slot, status: il.status, reason: 'this scene already has a picture' });
+  }
+  if (conflicts.length) return res.status(409).json({ error: `Confirm before replacing existing artwork on scene(s) ${conflicts.map((c) => c.slot).join(', ')}.`, conflicts, needsConfirm: true });
+
+  s.importJob = { batchId, status: 'running', total: assignments.length, done: 0, errors: [], startedAt: new Date().toISOString() };
+  bs.save();
+  setImmediate(async () => {
+    const target = images.targetFor(bs);
+    const area = importer.areaFor(bs);
+    for (const a of assignments) {
+      const f = byId.get(a.fileId);
+      const il = s.illustrations[a.slot - 1];
+      try {
+        const buf = fs.readFileSync(path.join(importer.stagingDir(bs, batchId), a.fileId));
+        const quality = await importer.analyze(buf, area);
+        const ext = quality.format === 'jpeg' ? 'jpg' : 'png';
+        const origFile = `il-${String(il.id).padStart(3, '0')}-${Date.now()}-${crypto.randomBytes(3).toString('hex')}-original.${ext}`;
+        storage.writeFile(path.join(bs.DIRS.originals, origFile), buf);
+        const prepared = await images.prepareLineArt(buf, target);
+        const wasApproved = il.status === 'approved';
+        images.saveCandidate(bs, il, prepared, 'import');
+        il.image.original = { file: origFile, name: f.name, bytes: buf.length, px: { w: quality.width, h: quality.height } };
+        il.image.quality = quality;
+        bs.logDecision(il, wasApproved ? 'replaced approved artwork by import (approval removed)' : 'imported', { from: f.name });
+        s.importJob.done++;
+      } catch (e) {
+        s.importJob.errors.push({ slot: a.slot, name: f?.name, error: e.message });
+      }
+      bs.save();
+    }
+    importer.dropBatch(bs, batchId);
+    s.importJob = { ...s.importJob, status: 'done', finishedAt: new Date().toISOString() };
+    bs.save();
+  });
+  res.status(202).json(publicState(bs));
 }));
 
 // Generate Full Book: estimate (no cost), start (needs approval if paid), stop, resume, retry failed pages.
@@ -264,9 +389,16 @@ book.post('/illustrations/:id/upload', upload.single('image'), wrap(async (req, 
   if (!req.file) return res.status(400).json({ error: 'No file received' });
   if (il.status === 'approved') return res.status(409).json({ error: 'Approved images are locked. Reject it first to replace it.' });
   if (il.status === 'generating') return res.status(409).json({ error: 'A generation is running for this page. Wait for it to finish.' });
+  if (il.image && req.query.replace !== '1') return res.status(409).json({ error: 'This page already has a picture. Confirm to replace it.', needsConfirm: true });
+  const quality = await importer.analyze(req.file.buffer, importer.areaFor(bs)).catch(() => null);
   const prepared = await images.prepareLineArt(req.file.buffer, images.targetFor(bs));
+  const ext = quality?.format === 'jpeg' ? 'jpg' : 'png';
+  const origFile = `il-${String(il.id).padStart(3, '0')}-${Date.now()}-${crypto.randomBytes(3).toString('hex')}-original.${ext}`;
+  storage.writeFile(path.join(bs.DIRS.originals, origFile), req.file.buffer);
   images.saveCandidate(bs, il, prepared, 'upload');
-  bs.logDecision(il, 'uploaded');
+  il.image.original = { file: origFile, name: req.file.originalname, bytes: req.file.size, px: quality ? { w: quality.width, h: quality.height } : null };
+  if (quality?.ok) il.image.quality = quality;
+  bs.logDecision(il, 'uploaded', { from: req.file.originalname });
   bs.save();
   res.json(publicState(bs));
 }));
@@ -314,6 +446,13 @@ book.post('/illustrations/:id/:action', wrap(async (req, res) => {
   res.json({ ...publicState(bs), note });
 }));
 
+book.get('/illustrations/:id/original', wrap(async (req, res) => {
+  const bs = req.bs, il = bs.getIllustration(req.params.id);
+  const o = il?.image?.original;
+  const file = o && path.join(bs.DIRS.originals, path.basename(o.file));
+  if (!file || !(await storage.ensureLocal(file))) return res.status(404).end();
+  res.download(file, o.name || path.basename(file));
+}));
 book.get('/illustrations/:id/image', wrap(async (req, res) => {
   const bs = req.bs, il = bs.getIllustration(req.params.id);
   if (!il || !il.image) return res.status(404).end();

@@ -7,7 +7,7 @@ const kb = (b) => (b > 1048576 ? (b / 1048576).toFixed(1) + ' MB' : Math.round(b
 const STATUS = { empty: 'Needs art', generating: 'Generating', review: 'Review', approved: 'Approved', rejected: 'Rejected', failed: 'Failed' };
 
 let S = null;
-const TABS = ['books', 'overview', 'pages', 'book', 'export', 'ai'];
+const TABS = ['books', 'overview', 'pages', 'book', 'export', 'ai', 'import'];
 let tab = TABS.includes(location.hash.slice(1)) ? location.hash.slice(1) : 'overview';
 let LIB = null;            // library: list of books
 let bookId = null;         // the open book
@@ -20,6 +20,10 @@ let AI = null;             // AI settings (masked; never contains keys)
 let gen = { textProvider: 'manual', imageProvider: 'manual', coverProvider: 'manual', autoApprove: false, budget: '', approve: false, estimate: null, forBook: null };
 let localCheck = null;
 let confirmApproveAll = false;
+let IMP = null;           // import preview: { batchId, files, slots, area }
+let impConfirm = { replace: false, approved: false };
+let confirmMeta = false;
+let confirmReupload = null;
 let preview = null;
 let previewTimer = null;
 let filter = 'all';
@@ -80,13 +84,14 @@ function schedulePoll() {
   clearTimeout(pollTimer);
   if (!S) return;
   if (S.illustrations.some((i) => i.status === 'generating')) pollTimer = setTimeout(load, 2000);
-  else if (S.genJob?.running) pollTimer = setTimeout(load, 2000);
+  else if (S.genJob?.running || S.importJob?.status === 'running') pollTimer = setTimeout(load, 2000);
   else if (S.storage.pending || S.autoExport?.status === 'running' || S.exportJob?.status === 'running') pollTimer = setTimeout(load, 2500);
 }
 
 // ---------- Rendering ----------
 function render() {
   if (!S && !['books', 'ai'].includes(tab)) tab = 'books';
+  if (tab === 'import' && !S) tab = 'books';
   document.querySelectorAll('.tab').forEach((b) => { b.setAttribute('aria-current', b.dataset.tab === tab ? 'page' : 'false'); if (b.dataset.tab !== 'books') b.disabled = !S; });
   const tag = $('.kdp-tag');
   if (tag) tag.textContent = S ? `${S.specs.interior.trim.label.split(' (')[0]} · ${S.illustrations.length} pictures` : 'KDP coloring books';
@@ -94,11 +99,11 @@ function render() {
   if (cur) cur.textContent = S ? S.book.title : '';
   renderBanner();
   const v = $('#view');
-  v.innerHTML = { books: viewBooks, overview: viewOverview, pages: viewPages, book: viewBook, export: viewExport, ai: viewAI }[tab]();
+  v.innerHTML = { books: viewBooks, overview: viewOverview, pages: viewPages, book: viewBook, export: viewExport, ai: viewAI, import: viewImport }[tab]();
 }
 
 // ---------- Books dashboard ----------
-const COUNT_CHOICES = [20, 30, 50, 75, 100, 150];
+const COUNT_CHOICES = [10, 20, 30, 50, 75, 100, 150];
 function newBookCount() { return newBook.custom !== '' ? Math.floor(Number(newBook.custom)) : newBook.count; }
 function viewBooks() {
   const books = (LIB?.books || []);
@@ -155,6 +160,7 @@ function viewBooks() {
   <div class="section-head"><h1>Your books</h1><div class="btn-row" style="flex:0 0 auto"><button class="btn ghost" data-go="ai">AI settings</button>${newBook.open ? '' : '<button class="btn primary" data-newbook="open">New book</button>'}</div></div>
   ${LIB?.migratedFrom ? `<p class="small muted">Your original book was moved into this library on ${new Date(LIB.migratedFrom.at).toLocaleDateString()}. Its original files are kept as a backup.</p>` : ''}
   ${form}
+  ${(LIB?.templates || []).length ? `<section class="card"><h2>Start from a template</h2>${LIB.templates.map((t) => `<div class="section-head"><div><b>${esc(t.title)}</b><p class="small muted">${esc(t.subtitle)} · ${t.illustrations} illustrations · ${t.type === 'story' ? 'story coloring book' : 'coloring book'} · ${esc(t.trim.replace('x', ' × '))} in</p></div><button class="btn" data-template="${esc(t.id)}">Create</button></div>`).join('')}<p class="small muted">Creates a new book; your other books are not changed.</p></section>` : ''}
   ${active.length ? active.map(card).join('') : '<p class="muted">No books yet. Tap “New book” to start one.</p>'}
   ${archived.length ? `<button class="btn ghost block" data-toggle-archived="1">${showArchived ? 'Hide' : 'Show'} archived books (${archived.length})</button>${showArchived ? archived.map(card).join('') : ''}` : ''}
   <p class="small muted">Archiving hides a book; nothing is deleted. Duplicating copies its settings, prompts and artwork (not its PDFs).</p>`;
@@ -211,6 +217,87 @@ function autoExportLine() {
   if (a.status === 'failed') return `<p class="small err">Automatic assembly stopped: ${esc(a.error)}</p>`;
   const probs = [...(a.interior?.problems || []), ...(a.cover?.problems || [])];
   return `<p class="small">Final files ${a.interior?.ok && a.cover?.ok ? 'built' : 'checked'} ${new Date(a.at).toLocaleString()}: interior ${a.interior?.ok ? 'passed' : 'blocked'}, cover ${a.cover?.ok ? 'passed' : 'blocked'}. See Export.</p>${probs.length ? `<div class="banner warn"><strong>Fix these, then build from the Export tab</strong>${[...new Set(probs)].map((p) => `<span>${esc(p)}</span>`).join('')}</div>` : ''}`;
+}
+
+// ---------- Scenes progress + artwork import ----------
+function scenesCard() {
+  const c = counts(), n = S.illustrations.length;
+  const imp = S.importJob;
+  const rows = S.illustrations.map((il) => {
+    const q = il.image?.quality;
+    return `<li class="scene"><span class="scene-n num">${String(il.id).padStart(2, '0')}</span>
+      ${il.hasImage ? `<img src="${BP}/illustrations/${il.id}/image?v=${encodeURIComponent(il.image.file)}" alt="" loading="lazy">` : '<span class="scene-empty" aria-hidden="true"></span>'}
+      <div class="scene-text"><span class="small">${esc(il.caption || il.title)}</span>${q ? `<span class="small num ${q.effectiveDpi < 300 ? 'warn-text' : 'muted'}">~${q.effectiveDpi} DPI original</span>` : ''}</div>
+      <span class="pill st-${il.status}">${STATUS[il.status]}</span></li>`;
+  }).join('');
+  return `<section class="card">
+    <div class="section-head"><h2>Scenes</h2><span class="small num">${c.approved}/${n} approved · ${n - c.empty - c.rejected - c.failed}/${n} with artwork</span></div>
+    ${imp?.status === 'running' ? `<div class="banner"><strong>Importing ${imp.done} of ${imp.total}…</strong><span>Converting pictures to print layout. You can keep using the app.</span></div>` : ''}
+    ${imp?.status === 'done' && imp.errors?.length ? `<div class="banner warn"><strong>Some images were not imported</strong>${imp.errors.map((e) => `<span>Scene ${e.slot} (${esc(e.name)}): ${esc(e.error)}</span>`).join('')}</div>` : ''}
+    <div class="btn-row"><button class="btn primary" data-go="import">Import artwork</button>${S.illustrations.some((il) => il.prompt) ? '<button class="btn ghost" data-copyprompts="1">Copy ChatGPT prompts</button>' : ''}</div>
+    <ul class="scenes">${rows}</ul>
+    ${S.book.requireMetadataApproval ? `<p class="small">${S.book.metadataApprovedAt ? '✓ Book details approved' : 'Book details not approved yet (Book tab)'}${S.book.author ? '' : ' · author name missing'}</p>` : ''}
+  </section>`;
+}
+function allPrompts() {
+  return S.illustrations.map((il) => `=== Scene ${String(il.id).padStart(2, '0')} — save the picture as ${String(il.id).padStart(2, '0')}.png ===\n${il.prompt}${il.caption ? `\n(Printed caption, not part of the picture: "${il.caption}")` : ''}`).join('\n\n');
+}
+async function copyText(text, what) {
+  try { await navigator.clipboard.writeText(text); toast(`${what} copied. Paste it into ChatGPT.`); }
+  catch { const ta = document.createElement('textarea'); ta.value = text; ta.style.cssText = 'position:fixed;inset:10% 5%;height:60%;z-index:30'; document.body.appendChild(ta); ta.focus(); ta.select(); toast('Select all and copy, then tap outside.'); ta.addEventListener('blur', () => ta.remove()); }
+}
+
+function viewImport() {
+  const n = S.illustrations.length;
+  const head = `<div class="section-head"><h1>Import artwork</h1><button class="btn ghost" data-go="overview">Back</button></div>`;
+  if (!IMP) return `${head}
+    <section class="card">
+      <h2>1. Choose your pictures</h2>
+      <p class="small">Pick one or more PNG or JPEG files, for example pictures you saved from ChatGPT. This is a manual hand-off: the app never talks to ChatGPT.</p>
+      <p class="small">Tip: save each picture with its scene number, e.g. <b>01.png</b> … <b>${String(n).padStart(2, '0')}.png</b> (in the Files app). Names like scene_01.png also work. Pictures chosen from Photos usually have camera names, so you assign them by hand in the next step.</p>
+      <label class="btn primary block" for="impFiles">Choose images…<input id="impFiles" type="file" accept="image/png,image/jpeg" multiple hidden></label>
+      <p class="small muted">Nothing is imported until you confirm the preview.</p>
+    </section>`;
+  const assigned = IMP.files.filter((f) => f.slot);
+  const dupSlots = assigned.map((f) => f.slot).filter((v, i, a) => a.indexOf(v) !== i);
+  const slotInfo = (id) => IMP.slots.find((x) => x.id === id);
+  const replacing = [...new Set(assigned.map((f) => f.slot))].filter((id) => slotInfo(id)?.hasImage && slotInfo(id).status !== 'approved');
+  const replacingApproved = [...new Set(assigned.map((f) => f.slot))].filter((id) => slotInfo(id)?.status === 'approved');
+  const cards = IMP.files.map((f) => {
+    const q = f.quality || {};
+    const opts = ['<option value="">— not imported —</option>', ...IMP.slots.map((sl) => `<option value="${sl.id}" ${f.slot === sl.id ? 'selected' : ''}>Scene ${String(sl.id).padStart(2, '0')}: ${esc(sl.caption)}${sl.status === 'approved' ? ' (approved)' : sl.hasImage ? ' (has a picture)' : ''}</option>`)].join('');
+    const badge = f.how === 'filename' && f.slot ? '<span class="pill st-approved">Matched by filename</span>' : f.how === 'duplicate' && !f.slot ? `<span class="pill st-warn">Also named for scene ${f.wantedSlot}</span>` : !q.ok ? '<span class="pill st-fail">Cannot import</span>' : f.slot ? '<span class="pill st-review">Chosen by you</span>' : '<span class="pill st-empty">Not matched</span>';
+    const sl = f.slot ? slotInfo(f.slot) : null;
+    return `<article class="card impcard">
+      <div class="imp-top">${q.ok ? `<img src="${BP}/import/${IMP.batchId}/thumb/${f.fileId}" alt="Preview of ${esc(f.name)}">` : '<span class="scene-empty"></span>'}
+        <div class="imp-meta"><b class="file-name">${esc(f.name)}</b>${badge}${q.ok ? `<span class="small muted num">${q.width} × ${q.height} px · ${Math.round(f.bytes / 1024)} KB · ~${q.effectiveDpi} DPI at print size</span>` : `<span class="err small">${esc(q.error || 'Unreadable')}</span>`}</div></div>
+      ${q.ok ? `<label class="field">Scene<select data-impslot="${f.fileId}">${opts}</select></label>` : ''}
+      ${sl ? `<p class="small">Caption: “${esc(sl.caption)}”</p>` : ''}
+      ${dupSlots.includes(f.slot) ? `<p class="err small">Another image is also set to scene ${f.slot}. Choose one.</p>` : ''}
+      ${sl?.status === 'approved' ? '<p class="err small">Replaces an APPROVED picture. Its approval will be removed.</p>' : sl?.hasImage ? '<p class="warn-text small">Replaces the picture this scene has now.</p>' : ''}
+      ${(q.warnings || []).map((w) => `<p class="small ${w.level === 'high' ? 'err' : 'warn-text'}">${esc(w.text)}</p>`).join('')}
+    </article>`;
+  }).join('');
+  const unassigned = IMP.files.filter((f) => !f.slot && f.quality?.ok).length;
+  const emptySlots = IMP.slots.filter((sl) => !sl.hasImage && !assigned.some((f) => f.slot === sl.id)).length;
+  const blocked = !assigned.length || dupSlots.length || (replacing.length && !impConfirm.replace) || (replacingApproved.length && !(impConfirm.replace && impConfirm.approved));
+  return `${head}
+    <section class="card">
+      <h2>2. Check the preview</h2>
+      <p class="small num">${assigned.length} of ${IMP.files.length} image(s) assigned · ${unassigned} not assigned · scenes without a picture: ${emptySlots}</p>
+      ${unassigned && emptySlots ? '<button class="btn ghost" data-impfill="1">Put unassigned images into empty scenes, in order</button>' : ''}
+      <p class="small muted">Quality notes describe the ORIGINAL picture. The app enlarges small images to 300 pixels per inch for print, but enlarging never adds real detail.</p>
+    </section>
+    ${cards}
+    <section class="card">
+      <h2>3. Import</h2>
+      ${replacing.length ? `<label class="toggle"><input type="checkbox" id="impReplace" ${impConfirm.replace ? 'checked' : ''}> Replace the current pictures on scene(s) ${replacing.concat(replacingApproved).join(', ')} (the old ones are kept in the history)</label>` : ''}
+      ${replacingApproved.length ? `<label class="toggle"><input type="checkbox" id="impApproved" ${impConfirm.approved ? 'checked' : ''}> Yes, remove the approval of scene(s) ${replacingApproved.join(', ')}</label>` : ''}
+      ${replacingApproved.length && !replacing.length ? `<label class="toggle"><input type="checkbox" id="impReplace" ${impConfirm.replace ? 'checked' : ''}> Replace the approved picture(s)</label>` : ''}
+      <button class="btn primary block" data-impcommit="1" ${blocked ? 'disabled' : ''}>Import ${assigned.length} picture(s)</button>
+      <button class="btn ghost block" data-impcancel="1">Cancel</button>
+      <p class="small muted">Imported pictures wait for your review. Originals are kept unchanged; print versions are made separately.</p>
+    </section>`;
 }
 
 // ---------- Generate Full Book ----------
@@ -371,6 +458,7 @@ function viewOverview() {
     <button class="btn primary block" data-go="pages">${c.approved === n ? 'Review pages' : `Review pages (${n - c.approved} to go)`}</button>
     ${autoExportLine()}
   </section>
+  ${scenesCard()}
   ${generatePanel()}
   ${storageCard()}
   <section class="card">
@@ -475,21 +563,27 @@ function card(il, gen) {
   const canGen = gen && il.canGenerate;
   const confirmKey = (act) => `${act}:${il.id}`;
   const confirmLabel = (act, label) => (confirmAct === confirmKey(act) ? 'Tap again to confirm' : label);
-  if (il.status === 'review') actions = `<button class="btn ok" data-act="approve" data-id="${il.id}">Approve</button><button class="btn bad" data-act="reject" data-id="${il.id}">Reject</button><button class="btn" data-act="regenerate" data-id="${il.id}" ${canGen ? '' : 'disabled'}>Regenerate</button>${preview}`;
+  const reup = `<label class="btn ghost" for="reup-${il.id}" data-reuplabel="${il.id}">${confirmReupload === il.id ? 'Choose the new file…' : 'Replace by re-upload'}<input id="reup-${il.id}" type="file" accept="image/png,image/jpeg" data-reupload="${il.id}" hidden></label>`;
+  if (il.status === 'review') actions = `<button class="btn ok" data-act="approve" data-id="${il.id}">Approve</button><button class="btn bad" data-act="reject" data-id="${il.id}">Reject</button>${canGen ? `<button class="btn" data-act="regenerate" data-id="${il.id}">Regenerate</button>` : ''}${reup}${preview}`;
   else if (il.status === 'approved') actions = `${preview}<button class="btn bad" data-act="reject" data-id="${il.id}" data-confirm="1">${confirmLabel('reject', 'Unapprove')}</button><button class="btn" data-act="regenerate" data-id="${il.id}" data-confirm="1" ${canGen ? '' : 'disabled'}>${confirmLabel('regenerate', 'Replace')}</button>`;
   else if (il.status !== 'generating') actions = `<button class="btn primary" data-gen="${il.id}" ${canGen ? '' : 'disabled'}>Generate</button>${upload}`;
   const src = il.image?.drawing
     ? `<span class="small muted num">Drawing: ${esc(il.image.drawing)} · seed ${il.image.seed} · ${il.image.quality ? `${il.image.quality.regions} coloring areas` : ''}</span>`
-    : il.image?.sourcePx ? `<span class="small muted num">Source ${il.image.sourcePx.w} × ${il.image.sourcePx.h} px · ${esc(il.image.origin)}</span>${uploadWarning(il.image.sourcePx)}` : '';
-  const noDesign = gen && !il.canGenerate && !il.hasImage && S.config.image.free ? '<span class="small muted">No drawing designed for this page yet. Upload works.</span>' : '';
+    : il.image?.sourcePx && !il.image.quality ? `<span class="small muted num">Source ${il.image.sourcePx.w} × ${il.image.sourcePx.h} px · ${esc(il.image.origin)}</span>${uploadWarning(il.image.sourcePx)}` : '';
+  const noDesign = gen && !il.canGenerate && !il.hasImage && S.config.image.free && S.book.drawingSet === 'dino' ? '<span class="small muted">No drawing designed for this page yet. Upload works.</span>' : '';
+  const q = il.image?.quality;
+  const qual = q ? `<span class="small num ${q.effectiveDpi < 300 ? 'warn-text' : 'muted'}">Original ${q.width} × ${q.height} px · ~${q.effectiveDpi} DPI at print size${q.effectiveDpi < 300 ? ' (enlarged for print; no added detail)' : ''}</span>${(q.warnings || []).filter((w) => !/Effective resolution/.test(w.text)).map((w) => `<span class="small warn-text">${esc(w.text)}</span>`).join('')}` : '';
+  const origLink = il.image?.original ? `<a class="small" href="${BP}/illustrations/${il.id}/original">Download original (${esc(il.image.original.name || 'file')})</a>` : '';
+  const capLine = il.caption ? `<span class="small">Caption: “${esc(il.caption)}”</span>` : '';
   return `<article class="il" id="il-${il.id}">
     <div class="il-art">${art}</div>
     <div class="il-body">
       <div class="il-head"><h3>${il.id}. ${esc(il.title)}</h3><span class="pill st-${il.status}">${STATUS[il.status]}</span></div>
       ${il.regenerateRequested && il.status !== 'generating' ? '<span class="small muted">Regeneration requested</span>' : ''}
-      ${src}${noDesign}
+      ${capLine}${src}${noDesign}${qual}${origLink}
       ${il.error ? `<p class="err">${esc(il.error)}</p>` : ''}
       <div class="btn-row">${actions}</div>
+      ${il.prompt ? `<button class="btn ghost" data-copyprompt="${il.id}">Copy ChatGPT prompt</button>` : ''}
       <details><summary>Prompt</summary>
         <label class="field"><span class="hint">Edit the prompt, then generate or regenerate.</span><textarea id="prompt-${il.id}" ${il.status === 'approved' ? 'readonly' : ''}>${esc(il.prompt)}</textarea></label>
         ${il.status === 'approved' ? '' : `<button class="btn ghost" data-saveprompt="${il.id}">Save prompt</button>`}
@@ -515,6 +609,12 @@ function viewBook() {
     <label class="field">Copyright notice<textarea id="f-publisherNote" rows="3">${esc(b.publisherNote)}</textarea></label>
   </form>
 
+  ${S.book.characters?.length || S.book.artStyle ? `<section class="card"><h2>Characters and art style</h2>${(S.book.characters || []).map((c) => `<p class="small"><b>${esc(c.name)}:</b> ${esc(c.description)}</p>`).join('')}${S.book.artStyle ? `<p class="small"><b>Art style:</b> ${esc(S.book.artStyle)}</p>` : ''}<p class="small muted">Included in every ChatGPT prompt.</p></section>` : ''}
+  <section class="card">
+    <div class="section-head"><h2>Approve book details</h2><span class="pill ${b.metadataApprovedAt ? 'st-approved' : 'st-empty'}">${b.metadataApprovedAt ? 'Approved' : b.requireMetadataApproval ? 'Required' : 'Optional'}</span></div>
+    <p class="small">Title, subtitle, author, description and keywords as they will appear on KDP and the cover. Save your edits first. Changing them later asks for approval again.</p>
+    ${b.metadataApprovedAt ? `<p class="small">Approved ${new Date(b.metadataApprovedAt).toLocaleString()}.</p>` : `<button class="btn ok block" data-approvemeta="1">${confirmMeta ? 'Tap again to approve the book details' : 'Approve book details'}</button>`}
+  </section>
   <section class="card">
     <div class="section-head"><h2>KDP keywords</h2><span class="small muted">7 boxes, 50 characters each</span></div>
     ${kws.map((k, i) => `<div class="kw"><input type="text" id="f-kw-${i}" value="${esc(k)}" maxlength="50" aria-label="Keyword ${i + 1}"><small id="kwc-${i}" class="${k.length > 50 ? 'over' : ''}">${k.length}/50</small></div>`).join('')}
@@ -605,7 +705,7 @@ function viewExport() {
 
 // ---------- Events ----------
 document.addEventListener('click', async (e) => {
-  const t = e.target.closest('button, [data-go]');
+  const t = e.target.closest('button, [data-go], [data-reuplabel]');
   if (!t) return;
   try {
     if (t.dataset.tab || t.dataset.go) {
@@ -614,6 +714,32 @@ document.addEventListener('click', async (e) => {
       if (tab === 'ai') AI = await api('/api/ai/settings');
       render(); scrollTo(0, 0); return;
     }
+    if (t.dataset.template) {
+      t.disabled = true;
+      const out = await api('/api/books/from-template', { method: 'POST', body: { templateId: t.dataset.template } });
+      bookId = out.bookId; tab = 'overview'; await load(); scrollTo(0, 0); toast('Book created from the template'); return;
+    }
+    if (t.dataset.copyprompts) { await copyText(allPrompts(), 'All prompts'); return; }
+    if (t.dataset.copyprompt) { const il = S.illustrations.find((i) => i.id === Number(t.dataset.copyprompt)); await copyText(il.prompt, `Scene ${il.id} prompt`); return; }
+    if (t.dataset.approvemeta) {
+      if (!confirmMeta) { confirmMeta = true; render(); return; }
+      confirmMeta = false; setState(await api('/api/metadata/approve', { method: 'POST', body: { confirm: true } })); toast('Book details approved'); return;
+    }
+    if (t.dataset.impfill) {
+      const empty = IMP.slots.filter((sl) => !sl.hasImage && !IMP.files.some((f) => f.slot === sl.id)).map((sl) => sl.id);
+      for (const f of IMP.files) if (!f.slot && f.quality?.ok && empty.length) { f.slot = empty.shift(); f.how = 'manual'; }
+      render(); return;
+    }
+    if (t.dataset.impcancel) { if (IMP) api(`/api/import/${IMP.batchId}`, { method: 'DELETE' }).catch(() => {}); IMP = null; impConfirm = { replace: false, approved: false }; render(); return; }
+    if (t.dataset.impcommit) {
+      t.disabled = true;
+      const assigned = IMP.files.filter((f) => f.slot);
+      const slots = assigned.map((f) => f.slot);
+      const approvedSlots = slots.filter((id) => IMP.slots.find((x) => x.id === id)?.status === 'approved');
+      const out = await api(`/api/import/${IMP.batchId}/commit`, { method: 'POST', body: { assignments: assigned.map((f) => ({ fileId: f.fileId, slot: f.slot })), confirmReplace: impConfirm.replace ? slots : [], confirmReplaceApproved: impConfirm.replace && impConfirm.approved ? approvedSlots : [] } });
+      IMP = null; impConfirm = { replace: false, approved: false }; tab = 'overview'; setState(out); scrollTo(0, 0); toast('Importing… pictures will wait for your review'); return;
+    }
+    if (t.dataset.reuplabel && confirmReupload !== Number(t.dataset.reuplabel)) { e.preventDefault(); confirmReupload = Number(t.dataset.reuplabel); render(); toast('Tap again to choose the replacement file'); return; }
     if (t.dataset.genStart) {
       t.disabled = true;
       const res = await api('/api/generate/start', { method: 'POST', body: { textProvider: gen.textProvider, imageProvider: gen.imageProvider, coverProvider: gen.coverProvider, autoApprove: gen.autoApprove, approve: gen.approve, approvedBudgetUsd: Number(gen.budget) || 0 } });
@@ -721,6 +847,21 @@ document.addEventListener('change', async (e) => {
   const el = e.target;
   if (el.id === 'nb-trim') { newBook.trim = el.value; refreshPreview(); return; }
   if (el.id === 'nb-type') { newBook.type = el.value; return; }
+  if (el.dataset.impslot) { const f = IMP.files.find((x) => x.fileId === el.dataset.impslot); f.slot = el.value ? Number(el.value) : null; f.how = f.slot ? 'manual' : 'unassigned'; render(); return; }
+  if (el.id === 'impReplace') { impConfirm.replace = el.checked; render(); return; }
+  if (el.id === 'impApproved') { impConfirm.approved = el.checked; render(); return; }
+  if (el.id === 'impFiles' && el.files.length) {
+    const fd = new FormData(); for (const f of el.files) fd.append('images', f, f.name);
+    toast(`Checking ${el.files.length} image(s)…`);
+    try { IMP = await api('/api/import/analyze', { method: 'POST', body: fd }); impConfirm = { replace: false, approved: false }; render(); scrollTo(0, 0); } catch (err) { toast(err.message); }
+    return;
+  }
+  if (el.dataset.reupload && el.files[0]) {
+    const fd = new FormData(); fd.append('image', el.files[0]);
+    confirmReupload = null; toast('Uploading the replacement…');
+    try { setState(await api(`/api/illustrations/${el.dataset.reupload}/upload?replace=1`, { method: 'POST', body: fd })); toast('Replaced. Review it, then approve or reject.'); } catch (err) { toast(err.message); }
+    return;
+  }
   if (['gen-text', 'gen-image', 'gen-cover'].includes(el.id)) { gen[{ 'gen-text': 'textProvider', 'gen-image': 'imageProvider', 'gen-cover': 'coverProvider' }[el.id]] = el.value; gen.approve = false; await refreshEstimate(); return; }
   if (el.id === 'gen-auto') { gen.autoApprove = el.checked; return; }
   if (el.id === 'gen-approve') { gen.approve = el.checked; render(); return; }
